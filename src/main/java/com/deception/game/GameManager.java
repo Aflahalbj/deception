@@ -1,6 +1,5 @@
 package com.deception.game;
 
-import com.deception.entity.BotManager;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
@@ -46,7 +45,7 @@ public class GameManager {
     // ---------- Registrasi ----------
 
     public boolean registerPlayer(MinecraftServer server, String name) {
-        ServerPlayer player = BotManager.resolvePlayer(server, name);
+        ServerPlayer player = server.getPlayerList().getPlayerByName(name);
         if (player == null) {
             return false;
         }
@@ -74,11 +73,6 @@ public class GameManager {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             registeredPlayers.add(player.getUUID());
             playerNames.put(player.getUUID(), player.getGameProfile().getName());
-            count++;
-        }
-        for (ServerPlayer bot : BotManager.get().getActiveBots().values()) {
-            registeredPlayers.add(bot.getUUID());
-            playerNames.put(bot.getUUID(), bot.getGameProfile().getName());
             count++;
         }
         return count;

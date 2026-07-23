@@ -15,7 +15,7 @@ public class ModEntities {
 
     public static final RegistryObject<EntityType<ClueEntity>> CLUE_ENTITY = ENTITY_TYPES.register("clue_entity",
             () -> EntityType.Builder.<ClueEntity>of(ClueEntity::new, MobCategory.MISC)
-                    .sized(0.4F, 0.1F)
+                    .sized(0.9F, 0.3F)
                     .clientTrackingRange(10)
                     .build("clue_entity"));
 }

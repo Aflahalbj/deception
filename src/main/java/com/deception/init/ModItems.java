@@ -2,8 +2,11 @@ package com.deception.init;
 
 import com.deception.DeceptionMod;
 import com.deception.entity.ClueItem;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.registries.DeferredRegister;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.RegistryObject;
@@ -20,6 +23,9 @@ import java.util.Map;
 public class ModItems {
 
     public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, DeceptionMod.MOD_ID);
+
+    public static final DeferredRegister<CreativeModeTab> CREATIVE_TABS =
+            DeferredRegister.create(Registries.CREATIVE_MODE_TAB, DeceptionMod.MOD_ID);
 
     private static final String[] CLUE_IDS = {
             "clue_abu_rokok",
@@ -324,4 +330,24 @@ public class ModItems {
             CLUE_ITEMS.put(id, item);
         }
     }
+
+    // tab "Clue" — cuma item yang nama-nya diawali "clue_"
+    public static final RegistryObject<CreativeModeTab> CLUE_TAB = CREATIVE_TABS.register("clue_tab", () ->
+            CreativeModeTab.builder()
+                    .title(Component.translatable("itemGroup." + DeceptionMod.MOD_ID + ".clue"))
+                    .icon(() -> new ItemStack(CLUE_ITEMS.get("clue_abu_rokok").get()))
+                    .displayItems((params, output) -> CLUE_ITEMS.forEach((id, item) -> {
+                        if (id.startsWith("clue_")) output.accept(item.get());
+                    }))
+                    .build());
+
+    // tab "Means" — cuma item yang nama-nya diawali "means_"
+    public static final RegistryObject<CreativeModeTab> MEANS_TAB = CREATIVE_TABS.register("means_tab", () ->
+            CreativeModeTab.builder()
+                    .title(Component.translatable("itemGroup." + DeceptionMod.MOD_ID + ".means"))
+                    .icon(() -> new ItemStack(CLUE_ITEMS.get("means_pisau_dapur").get()))
+                    .displayItems((params, output) -> CLUE_ITEMS.forEach((id, item) -> {
+                        if (id.startsWith("means_")) output.accept(item.get());
+                    }))
+                    .build());
 }

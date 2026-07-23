@@ -49,6 +49,10 @@ public class ClueItem extends Item {
         entity.setClueScale(1.0F);
         entity.setFace(face);
         entity.setFacing(facing);
+        // nama entity ngikutin nama item-nya (dari lang file, "item.deception.<clueId>")
+        // biar keliatan nametag-nya pas ditaro, ukuran block/hitbox gak kepengaruh sama sekali
+        entity.setCustomName(this.getDescription());
+        entity.setCustomNameVisible(true);
 
         double x = spawnPos.getX() + 0.5;
         double y = spawnPos.getY();
