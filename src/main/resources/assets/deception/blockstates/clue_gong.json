@@ -1,0 +1,57 @@
+{
+  "variants": {
+    "face=floor,facing=north": {
+      "model": "deception:block/clue_gong"
+    },
+    "face=floor,facing=east": {
+      "model": "deception:block/clue_gong",
+      "y": 90
+    },
+    "face=floor,facing=south": {
+      "model": "deception:block/clue_gong",
+      "y": 180
+    },
+    "face=floor,facing=west": {
+      "model": "deception:block/clue_gong",
+      "y": 270
+    },
+    "face=ceiling,facing=north": {
+      "model": "deception:block/clue_gong",
+      "x": 180
+    },
+    "face=ceiling,facing=east": {
+      "model": "deception:block/clue_gong",
+      "x": 180,
+      "y": 270
+    },
+    "face=ceiling,facing=south": {
+      "model": "deception:block/clue_gong",
+      "x": 180,
+      "y": 180
+    },
+    "face=ceiling,facing=west": {
+      "model": "deception:block/clue_gong",
+      "x": 180,
+      "y": 90
+    },
+    "face=wall,facing=north": {
+      "model": "deception:block/clue_gong_wall",
+      "x": 90
+    },
+    "face=wall,facing=east": {
+      "model": "deception:block/clue_gong_wall",
+      "x": 90,
+      "y": 90
+    },
+    "face=wall,facing=south": {
+      "model": "deception:block/clue_gong_wall",
+      "x": 90,
+      "y": 180
+    },
+    "face=wall,facing=west": {
+      "model": "deception:block/clue_gong_wall",
+      "x": 90,
+      "y": 270
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "variants": {
+    "face=floor,facing=north": {
+      "model": "deception:block/clue_bekas_luka"
+    },
+    "face=floor,facing=east": {
+      "model": "deception:block/clue_bekas_luka",
+      "y": 90
+    },
+    "face=floor,facing=south": {
+      "model": "deception:block/clue_bekas_luka",
+      "y": 180
+    },
+    "face=floor,facing=west": {
+      "model": "deception:block/clue_bekas_luka",
+      "y": 270
+    },
+    "face=ceiling,facing=north": {
+      "model": "deception:block/clue_bekas_luka",
+      "x": 180
+    },
+    "face=ceiling,facing=east": {
+      "model": "deception:block/clue_bekas_luka",
+      "x": 180,
+      "y": 270
+    },
+    "face=ceiling,facing=south": {
+      "model": "deception:block/clue_bekas_luka",
+      "x": 180,
+      "y": 180
+    },
+    "face=ceiling,facing=west": {
+      "model": "deception:block/clue_bekas_luka",
+      "x": 180,
+      "y": 90
+    },
+    "face=wall,facing=north": {
+      "model": "deception:block/clue_bekas_luka_wall",
+      "x": 90
+    },
+    "face=wall,facing=east": {
+      "model": "deception:block/clue_bekas_luka_wall",
+      "x": 90,
+      "y": 90
+    },
+    "face=wall,facing=south": {
+      "model": "deception:block/clue_bekas_luka_wall",
+      "x": 90,
+      "y": 180
+    },
+    "face=wall,facing=west": {
+      "model": "deception:block/clue_bekas_luka_wall",
+      "x": 90,
+      "y": 270
+    }
+  }
+}

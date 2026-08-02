@@ -1,6 +1,5 @@
 package com.deception.command;
 
-import com.deception.entity.ClueEntity;
 import com.deception.game.GameManager;
 import com.deception.game.Role;
 import com.mojang.brigadier.CommandDispatcher;
@@ -11,8 +10,6 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.phys.AABB;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -168,33 +165,6 @@ public class ModCommands {
                             ctx.getSource().sendSuccess(() -> Component.literal("Game dihentikan.").withStyle(ChatFormatting.RED), true);
                             return 1;
                         }))
-
-                .then(literal("resizeitem")
-                        .then(argument("persen", IntegerArgumentType.integer(1, 500))
-                                .executes(ctx -> {
-                                    int persen = IntegerArgumentType.getInteger(ctx, "persen");
-                                    float scale = persen / 100.0F;
-                                    int count = 0;
-                                    // area gede yang nyakup seluruh build limit (gak ada AABB.INFINITE di 1.20.1)
-                                    AABB wholeWorld = new AABB(-3.0E7, -64, -3.0E7, 3.0E7, 320, 3.0E7);
-                                    for (ServerLevel level : ctx.getSource().getServer().getAllLevels()) {
-                                        for (ClueEntity clue : level.getEntitiesOfClass(ClueEntity.class, wholeWorld, e -> true)) {
-                                            clue.setClueScale(scale);
-                                            count++;
-                                        }
-                                    }
-                                    int finalCount = count;
-                                    if (finalCount == 0) {
-                                        ctx.getSource().sendFailure(Component.literal("Gak ada clue/means yang ke-detect di map."));
-                                        return 0;
-                                    }
-                                    ctx.getSource().sendSuccess(() -> Component.literal(finalCount + " clue/means di-resize jadi " + persen + "%.").withStyle(ChatFormatting.GREEN), true);
-                                    return finalCount;
-                                })))
-
-                // Note: glow sekarang bisa dipasang langsung pake vanilla /effect, contoh:
-                //   /effect give @e[type=deception:clue_entity] minecraft:glowing infinite 1 true
-                // gak butuh command custom lagi karena ClueEntity udah jadi LivingEntity.
                 );
     }
 
