@@ -161,7 +161,7 @@ public class ModCommands {
 
                 .then(literal("stopgame")
                         .executes(ctx -> {
-                            GameManager.get().stopGame();
+                            GameManager.get().stopGame(ctx.getSource().getServer());
                             ctx.getSource().sendSuccess(() -> Component.literal("Game dihentikan.").withStyle(ChatFormatting.RED), true);
                             return 1;
                         }))
