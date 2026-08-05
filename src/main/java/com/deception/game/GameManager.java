@@ -48,7 +48,7 @@ import java.util.*;
 public class GameManager {
 
     public enum State {
-        IDLE, COUNTDOWN, SHUFFLE, NIGHT, DISCUSS, RUNNING
+        IDLE, COUNTDOWN, SHUFFLE, REVEAL_DELAY, NIGHT, DISCUSS, RUNNING
     }
 
     private static final GameManager INSTANCE = new GameManager();
@@ -85,11 +85,14 @@ public class GameManager {
     private int discussTicksLeft = 0;
 
     // ---------- Night sequence (tutup mata -> murderer/accomplice pilih item -> witness liat) ----------
+    private static final int NIGHT_REVEAL_DELAY = 100;
     private static final int NIGHT_CLOSE_HOLD = 60;    // 3 detik "semua tutup mata" sebelum killer dibangunin
     private static final int NIGHT_WITNESS_HOLD = 60;  // 3 detik witness liat killer nyala (glowing)
     private static final int NIGHT_WAKE_HOLD = 20;     // 1 detik title "semua bangun" sebelum lanjut discuss
+    private static final int NIGHT_PRE_WAKE_HOLD = 60; // 3 detik jeda sebelum "Semua orang buka mata" (abis witness tutup mata / abis murderer&accomplice tutup mata kalo gaada witness)
     private final Set<UUID> confirmedMurderers = new HashSet<>();
 
+    private int revealDelayTicks = 0;
     private int nightTicksElapsed;
     private int nightKillersWakeAt;
     private int nightWitnessRevealAt;
@@ -100,11 +103,19 @@ public class GameManager {
     private final List<UUID> nightKillers = new ArrayList<>();
     private UUID nightWitnessUuid;
     private boolean murdererConfirmed = false;
+    private final Set<BlockPos> processedClicks = new HashSet<>();
+    private long lastClickTick = 0;
 
     // ---------- Murderer pilih item means/clue asli pas night ----------
     // 2 posisi: 1 untuk means, 1 untuk clue
     private BlockPos murdererSelectedMeansBacking = null;
     private BlockPos murdererSelectedClueBacking = null;
+    // posisi block clue asli (bukan backing-nya) buat ambil nama item pas kirim pesan
+    private BlockPos murdererSelectedMeansPos = null;
+    private BlockPos murdererSelectedCluePos = null;
+
+    // ---------- Witness konfirmasi udah liat (kaya murdererConfirmed tapi buat witness) ----------
+    private boolean witnessConfirmed = false;
 
     // reverse-lookup posisi block means/clue -> UUID pemilik cluster-nya
     private final Map<BlockPos, UUID> clusterOwnerByPos = new HashMap<>();
@@ -218,9 +229,9 @@ public class GameManager {
     // ---------- Custom role toggle ----------
 
     public void setCustomRole(Role role, boolean enabled) {
-        if (role == Role.ACCOMPLICE) {
+        if (role == Role.accomplice) {
             accompliceOverride = enabled;
-        } else if (role == Role.WITNESS) {
+        } else if (role == Role.witness) {
             witnessOverride = enabled;
         }
     }
@@ -329,10 +340,14 @@ public class GameManager {
         this.lastCountdownSecondShown = -1;
         this.shuffleTicksLeft = 0;
         this.discussTicksLeft = 0;
+        this.revealDelayTicks = 0;
         this.nightTicksElapsed = 0;
         this.murdererConfirmed = false;
+        this.witnessConfirmed = false;
         this.murdererSelectedMeansBacking = null;
         this.murdererSelectedClueBacking = null;
+        this.murdererSelectedMeansPos = null;
+        this.murdererSelectedCluePos = null;
         this.nightWitnessRevealAt = Integer.MAX_VALUE;
         this.nightWitnessEndAt = Integer.MAX_VALUE;
         this.nightWakeAllAt = Integer.MAX_VALUE;
@@ -344,8 +359,7 @@ public class GameManager {
             if (previousDifficulty != null) {
                 target.setDifficulty(previousDifficulty, true);
             }
-            
-            // Balikin backing ke warna asli sebelum restoreArena
+
             ServerLevel level = target.overworld();
             if (murdererSelectedMeansBacking != null) {
                 restoreBacking(level, murdererSelectedMeansBacking);
@@ -353,20 +367,40 @@ public class GameManager {
             if (murdererSelectedClueBacking != null) {
                 restoreBacking(level, murdererSelectedClueBacking);
             }
-            
+
             restoreArena(target);
+
             for (UUID uuid : registeredPlayers) {
                 ServerPlayer player = target.getPlayerList().getPlayer(uuid);
                 if (player != null) {
                     player.setGameMode(GameType.SURVIVAL);
-                    removeBlindfold(player);
+
+                    // Hapus noteblock dari kepala
+                    if (player.getItemBySlot(EquipmentSlot.HEAD).getItem() == Items.NOTE_BLOCK) {
+                        player.setItemSlot(EquipmentSlot.HEAD, ItemStack.EMPTY);
+                    }
+
+                    // FORCE CLOSE - langsung ilang tanpa animasi
+                    com.deception.network.ModNetworking.sendForceCloseBlindfold(player);
+
                     removeGlow(player);
+
+                    // Clear semua title dan actionbar
+                    player.connection.send(new ClientboundSetTitlesAnimationPacket(0, 0, 0));
+                    player.connection.send(new ClientboundSetTitleTextPacket(Component.empty()));
+                    player.connection.send(new ClientboundSetSubtitleTextPacket(Component.empty()));
+                    player.connection.send(new ClientboundSetActionBarTextPacket(Component.empty()));
+
                     AttributeInstance blockReach = player.getAttribute(ForgeMod.BLOCK_REACH.get());
                     if (blockReach != null) {
                         blockReach.setBaseValue(blockReach.getAttribute().getDefaultValue());
                     }
                 }
             }
+
+            // Clear custom actionbar
+            com.deception.network.ModNetworking.broadcastNightActionBar(Component.empty());
+
             nightBlindfolded.clear();
             nightKillers.clear();
             nightWitnessUuid = null;
@@ -501,8 +535,8 @@ public class GameManager {
                     counts.put(role, currentCount - 1);
                 } else {
                     // Kalo role udah penuh, override tetap dipake tapi kita kurangi dari Investigator
-                    counts.put(Role.INVESTIGATOR, counts.getOrDefault(Role.INVESTIGATOR, 0) - 1);
-                    if (counts.get(Role.INVESTIGATOR) < 0) counts.put(Role.INVESTIGATOR, 0);
+                    counts.put(Role.investigator, counts.getOrDefault(Role.investigator, 0) - 1);
+                    if (counts.get(Role.investigator) < 0) counts.put(Role.investigator, 0);
                 }
             }
             
@@ -554,15 +588,15 @@ public class GameManager {
             if (targetFs != null) {
                 UUID currentFs = null;
                 for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
-                    if (e.getValue() == Role.FORENSIC_SCIENTIST) {
+                    if (e.getValue() == Role.forensic_scientist) {
                         currentFs = e.getKey();
                         break;
                     }
                 }
                 if (currentFs != null && !currentFs.equals(targetFs)) {
                     Role targetOldRole = roleAssignments.get(targetFs);
-                    roleAssignments.put(targetFs, Role.FORENSIC_SCIENTIST);
-                    roleAssignments.put(currentFs, targetOldRole != null ? targetOldRole : Role.INVESTIGATOR);
+                    roleAssignments.put(targetFs, Role.forensic_scientist);
+                    roleAssignments.put(currentFs, targetOldRole != null ? targetOldRole : Role.investigator);
                 }
             }
         }
@@ -594,16 +628,19 @@ public class GameManager {
         this.state = State.NIGHT;
         this.nightTicksElapsed = 0;
         this.murdererConfirmed = false;
+        this.witnessConfirmed = false;
         this.murdererSelectedMeansBacking = null;
         this.murdererSelectedClueBacking = null;
+        this.murdererSelectedMeansPos = null;
+        this.murdererSelectedCluePos = null;
 
         UUID fsUuid = null;
         nightKillers.clear();
         nightWitnessUuid = null;
         for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
-            if (e.getValue() == Role.FORENSIC_SCIENTIST) fsUuid = e.getKey();
-            else if (e.getValue() == Role.MURDERER || e.getValue() == Role.ACCOMPLICE) nightKillers.add(e.getKey());
-            else if (e.getValue() == Role.WITNESS) nightWitnessUuid = e.getKey();
+            if (e.getValue() == Role.forensic_scientist) fsUuid = e.getKey();
+            else if (e.getValue() == Role.murderer || e.getValue() == Role.accomplice) nightKillers.add(e.getKey());
+            else if (e.getValue() == Role.witness) nightWitnessUuid = e.getKey();
         }
 
         nightKillersWakeAt = NIGHT_PRECLOSE_DELAY + NIGHT_CLOSE_HOLD;
@@ -621,9 +658,20 @@ public class GameManager {
             nightPendingBlindfold.add(uuid);
         }
 
-        com.deception.network.ModNetworking.broadcastNightTitle(
-                Component.literal("Semua orang tutup mata").withStyle(ChatFormatting.DARK_GRAY),
-                Component.empty(), 10, NIGHT_PRECLOSE_DELAY + NIGHT_CLOSE_HOLD - 20, 10);
+        // PAKE TITLE BAWAAN MINECRAFT buat "Semua orang tutup mata"
+        // Ini akan ikut ketutup sama eyelid overlay
+        Component title = Component.literal("Semua orang tutup mata").withStyle(ChatFormatting.RED);
+        Component subtitle = Component.empty();
+        int fadeIn = 10;
+        int stay = NIGHT_PRECLOSE_DELAY + NIGHT_CLOSE_HOLD - 20;
+        int fadeOut = 10;
+        
+        for (UUID uuid : registeredPlayers) {
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player != null) {
+                sendTitle(player, title, subtitle, fadeIn, stay, fadeOut);
+            }
+        }
     }
 
     private void tickNightSequence() {
@@ -657,7 +705,7 @@ public class GameManager {
                 if (p != null) {
                     removeBlindfold(p);
                     nightBlindfolded.remove(uuid);
-                    if (roleAssignments.get(uuid) == Role.MURDERER) {
+                    if (roleAssignments.get(uuid) == Role.murderer) {
                         giveConfirmHead(p);
                     }
                 }
@@ -668,43 +716,35 @@ public class GameManager {
 
         for (UUID uuid : nightKillers) {
             ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
-            if (p != null && roleAssignments.get(uuid) == Role.MURDERER && !murdererConfirmed) {
+            if (p != null && roleAssignments.get(uuid) == Role.murderer && !murdererConfirmed) {
                 lockMurdererInventory(p);
             }
         }
 
         if (nightTicksElapsed == nightWitnessRevealAt && nightWitnessRevealAt != Integer.MAX_VALUE) {
-            com.deception.network.ModNetworking.broadcastNightActionBar(Component.empty());
-            
             if (nightWitnessUuid != null) {
                 ServerPlayer witnessPlayer = serverRef.getPlayerList().getPlayer(nightWitnessUuid);
                 if (witnessPlayer != null) {
                     removeBlindfold(witnessPlayer);
                     nightBlindfolded.remove(nightWitnessUuid);
+                    giveConfirmHead(witnessPlayer);
                 }
                 com.deception.network.ModNetworking.broadcastNightTitle(
-                        Component.literal("Perhatikan baik-baik").withStyle(ChatFormatting.AQUA),
-                        Component.empty(), 10, NIGHT_WITNESS_HOLD, 10);
-                
+                        Component.literal("Witness buka mata").withStyle(ChatFormatting.AQUA),
+                        Component.empty(), 10, 40, 10);
+
                 for (UUID uuid : nightKillers) {
                     ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
                     if (p != null) applyGlow(p);
                 }
+                com.deception.network.ModNetworking.broadcastNightActionBar(
+                        Component.literal("Menunggu witness melihat").withStyle(ChatFormatting.AQUA));
             }
         }
 
-        if (nightTicksElapsed == nightWitnessEndAt && nightWitnessEndAt != Integer.MAX_VALUE) {
-            if (nightWitnessUuid != null) {
-                for (UUID uuid : nightKillers) {
-                    ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
-                    if (p != null) removeGlow(p);
-                }
-                ServerPlayer witnessPlayer = serverRef.getPlayerList().getPlayer(nightWitnessUuid);
-                if (witnessPlayer != null) {
-                    putBlindfold(witnessPlayer);
-                    nightBlindfolded.add(nightWitnessUuid);
-                }
-            }
+        if (nightWitnessUuid != null) {
+            ServerPlayer wp = serverRef.getPlayerList().getPlayer(nightWitnessUuid);
+            if (wp != null) lockWitnessInventory(wp);
         }
 
         if (nightTicksElapsed == nightWakeAllAt && nightWakeAllAt != Integer.MAX_VALUE) {
@@ -714,7 +754,7 @@ public class GameManager {
             }
             nightBlindfolded.clear();
             com.deception.network.ModNetworking.broadcastNightTitle(
-                    Component.literal("Semua orang bangun").withStyle(ChatFormatting.GOLD),
+                    Component.literal("Semua orang buka mata").withStyle(ChatFormatting.GOLD),
                     Component.empty(), 10, NIGHT_WAKE_HOLD, 10);
         }
 
@@ -765,7 +805,7 @@ public class GameManager {
 
     public void lockMurdererInventory(ServerPlayer player) {
         UUID uuid = player.getUUID();
-        if (roleAssignments.get(uuid) != Role.MURDERER) return;
+        if (roleAssignments.get(uuid) != Role.murderer) return;
         if (murdererConfirmed) return;
         if (state != State.NIGHT) return;
         
@@ -783,19 +823,39 @@ public class GameManager {
         }
     }
 
+    public void lockWitnessInventory(ServerPlayer player) {
+        UUID uuid = player.getUUID();
+        if (roleAssignments.get(uuid) != Role.witness) return;
+        if (witnessConfirmed) return;
+        if (state != State.NIGHT) return;
+
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (isConfirmHead(stack)) {
+                if (i != 0) {
+                    ItemStack mainHand = player.getInventory().items.get(0);
+                    player.getInventory().items.set(0, stack);
+                    player.getInventory().items.set(i, mainHand);
+                    player.sendSystemMessage(Component.literal("Kepala konfirmasi tidak bisa dipindah!").withStyle(ChatFormatting.RED));
+                }
+                break;
+            }
+        }
+    }
+
     public boolean canDropItem(ServerPlayer player, ItemStack stack) {
         if (state != State.NIGHT) return true;
-        if (roleAssignments.get(player.getUUID()) != Role.MURDERER) return true;
-        if (murdererConfirmed) return true;
-        if (isConfirmHead(stack)) return false;
+        Role role = roleAssignments.get(player.getUUID());
+        if (role == Role.murderer && !murdererConfirmed && isConfirmHead(stack)) return false;
+        if (role == Role.witness && !witnessConfirmed && isConfirmHead(stack)) return false;
         return true;
     }
 
     public boolean canMoveItem(ServerPlayer player, ItemStack stack) {
         if (state != State.NIGHT) return true;
-        if (roleAssignments.get(player.getUUID()) != Role.MURDERER) return true;
-        if (murdererConfirmed) return true;
-        if (isConfirmHead(stack)) return false;
+        Role role = roleAssignments.get(player.getUUID());
+        if (role == Role.murderer && !murdererConfirmed && isConfirmHead(stack)) return false;
+        if (role == Role.witness && !witnessConfirmed && isConfirmHead(stack)) return false;
         return true;
     }
 
@@ -809,8 +869,19 @@ public class GameManager {
     public boolean onMurdererClickClue(ServerPlayer player, ServerLevel level, BlockPos pos) {
         if (state != State.NIGHT || murdererConfirmed) return false;
 
+        // Cegah double processing di tick yang sama
+        long currentTick = level.getGameTime();
+        if (currentTick == lastClickTick && processedClicks.contains(pos)) {
+            return false;
+        }
+        if (currentTick != lastClickTick) {
+            processedClicks.clear();
+            lastClickTick = currentTick;
+        }
+        processedClicks.add(pos);
+
         UUID uuid = player.getUUID();
-        if (roleAssignments.get(uuid) != Role.MURDERER) return false;
+        if (roleAssignments.get(uuid) != Role.murderer) return false;
         if (nightBlindfolded.contains(uuid)) return false;
 
         BlockState clickedState = level.getBlockState(pos);
@@ -826,7 +897,6 @@ public class GameManager {
         Direction facing = clickedState.getValue(ClueBlock.FACING);
         BlockPos backingPos = pos.relative(facing.getOpposite());
 
-        // Tentukan ini means atau clue berdasarkan Y
         boolean isMeans = pos.getY() == MEANS_Y;
         
         if (isMeans) {
@@ -835,6 +905,7 @@ public class GameManager {
             }
             level.setBlock(backingPos, Blocks.GREEN_CONCRETE.defaultBlockState(), 3);
             murdererSelectedMeansBacking = backingPos;
+            murdererSelectedMeansPos = pos;
             player.sendSystemMessage(Component.literal("Means dipilih (" + getItemName(level, pos) + ").").withStyle(ChatFormatting.GREEN));
         } else {
             if (murdererSelectedClueBacking != null && !murdererSelectedClueBacking.equals(backingPos)) {
@@ -842,15 +913,16 @@ public class GameManager {
             }
             level.setBlock(backingPos, Blocks.GREEN_CONCRETE.defaultBlockState(), 3);
             murdererSelectedClueBacking = backingPos;
+            murdererSelectedCluePos = pos;
             player.sendSystemMessage(Component.literal("Clue dipilih (" + getItemName(level, pos) + ").").withStyle(ChatFormatting.GREEN));
         }
 
         boolean bothSelected = (murdererSelectedMeansBacking != null && murdererSelectedClueBacking != null);
         if (bothSelected) {
-            player.sendSystemMessage(Component.literal("Keduanya sudah dipilih! Klik kanan kepala konfirmasi.").withStyle(ChatFormatting.GOLD));
+            player.sendSystemMessage(Component.literal("Keduanya sudah dipilih! Klik kanan untuk konfirmasi.").withStyle(ChatFormatting.GOLD));
         } else {
             String next = murdererSelectedMeansBacking == null ? "means" : "clue";
-            player.sendSystemMessage(Component.literal("Pilih " + next + " juga, atau klik kanan kepala konfirmasi.").withStyle(ChatFormatting.YELLOW));
+            player.sendSystemMessage(Component.literal("Pilih " + next + " untuk konfirmasi.").withStyle(ChatFormatting.YELLOW));
         }
         return true;
     }
@@ -873,11 +945,11 @@ public class GameManager {
         if (state != State.NIGHT) return false;
 
         UUID uuid = player.getUUID();
-        if (roleAssignments.get(uuid) != Role.MURDERER) return false;
+        if (roleAssignments.get(uuid) != Role.murderer) return false;
         if (murdererConfirmed) return false;
 
         if (murdererSelectedMeansBacking == null || murdererSelectedClueBacking == null) {
-            String missing = murdererSelectedMeansBacking == null ? "means" : "clue";
+            String missing = murdererSelectedMeansBacking == null && murdererSelectedClueBacking == null ? "means & clue" : murdererSelectedClueBacking == null ? "clue" : "means";
             player.sendSystemMessage(Component.literal("Pilih " + missing + " dulu sebelum konfirmasi.").withStyle(ChatFormatting.RED));
             return true;
         }
@@ -885,19 +957,105 @@ public class GameManager {
         murdererConfirmed = true;
         stack.shrink(1);
 
+        ServerLevel level = serverRef.overworld();
+        String meansName = murdererSelectedMeansPos != null ? getItemName(level, murdererSelectedMeansPos) : "?";
+        String clueName = murdererSelectedCluePos != null ? getItemName(level, murdererSelectedCluePos) : "?";
+
+        // Balikin backing green concrete ke warna asli (red = means, blue = clue)
+        if (murdererSelectedMeansBacking != null) restoreBacking(level, murdererSelectedMeansBacking);
+        if (murdererSelectedClueBacking != null) restoreBacking(level, murdererSelectedClueBacking);
+
+        // Kirim ke Forensic Scientist: siapa aja murderer & accomplice, dan item yang dipilih murderer
+        UUID fsUuid = null;
+        String murdererName = getPlayerName(uuid);
+        List<String> accompliceNames = new ArrayList<>();
+        for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
+            if (e.getValue() == Role.forensic_scientist) fsUuid = e.getKey();
+            else if (e.getValue() == Role.accomplice) accompliceNames.add(getPlayerName(e.getKey()));
+        }
+        if (fsUuid != null) {
+            ServerPlayer fsPlayer = serverRef.getPlayerList().getPlayer(fsUuid);
+            if (fsPlayer != null) {
+                fsPlayer.sendSystemMessage(Component.literal("=== Hasil Malam ===").withStyle(ChatFormatting.GOLD));
+                fsPlayer.sendSystemMessage(Component.literal("Murderer: " + murdererName).withStyle(ChatFormatting.RED));
+                fsPlayer.sendSystemMessage(Component.literal("Accomplice: " + (accompliceNames.isEmpty() ? "-" : String.join(", ", accompliceNames))).withStyle(ChatFormatting.RED));
+                fsPlayer.sendSystemMessage(Component.literal("Means: " + meansName).withStyle(ChatFormatting.GRAY));
+                fsPlayer.sendSystemMessage(Component.literal("Clue: " + clueName).withStyle(ChatFormatting.GRAY));
+            }
+        }
+
+        // Kirim ke murderer & accomplice: item apa aja yang dipilih
+        for (UUID kUuid : nightKillers) {
+            ServerPlayer kp = serverRef.getPlayerList().getPlayer(kUuid);
+            if (kp != null) {
+                kp.sendSystemMessage(Component.literal("Means: " + meansName).withStyle(ChatFormatting.GRAY));
+                kp.sendSystemMessage(Component.literal("Clue: " + clueName).withStyle(ChatFormatting.GRAY));
+            }
+        }
+
+        // Murderer & accomplice tutup mata lagi + pasang noteblock
+        for (UUID kUuid : nightKillers) {
+            ServerPlayer kp = serverRef.getPlayerList().getPlayer(kUuid);
+            if (kp != null) {
+                putBlindfold(kp);
+                nightBlindfolded.add(kUuid);
+            }
+        }
+
+        String killerLabel = nightKillers.size() > 1 ? "Murderer & Accomplice" : "Murderer";
+        com.deception.network.ModNetworking.broadcastNightTitle(
+                Component.literal(killerLabel + " tutup mata").withStyle(ChatFormatting.RED),
+                Component.empty(), 10, 40, 10);
+        com.deception.network.ModNetworking.broadcastNightActionBar(Component.empty());
+
         boolean hasWitness = nightWitnessUuid != null;
         if (hasWitness) {
-            nightWitnessRevealAt = nightTicksElapsed + 5;
-            nightWitnessEndAt = nightWitnessRevealAt + NIGHT_WITNESS_HOLD;
-            nightWakeAllAt = nightWitnessEndAt;
-            nightDoneAt = nightWakeAllAt + NIGHT_WAKE_HOLD;
-            broadcast(serverRef, Component.literal("Murderer telah memilih itemnya.").withStyle(ChatFormatting.GRAY));
+            nightWitnessRevealAt = nightTicksElapsed + NIGHT_CLOSE_HOLD;
         } else {
-            nightWakeAllAt = nightTicksElapsed + 5;
+            nightWakeAllAt = nightTicksElapsed + NIGHT_PRE_WAKE_HOLD;
             nightDoneAt = nightWakeAllAt + NIGHT_WAKE_HOLD;
         }
 
         player.sendSystemMessage(Component.literal("Pilihan dikonfirmasi!").withStyle(ChatFormatting.GREEN));
+        return true;
+    }
+
+    /**
+     * Dipanggil dari event handler pas Witness klik kanan (di udara)
+     * pake kepala konfirmasi yang sama kaya punya murderer -- nandain
+     * witness udah selesai liat murderer/accomplice glowing.
+     */
+    public boolean onWitnessConfirmHead(ServerPlayer player, ItemStack stack) {
+        if (!stack.hasTag() || !stack.getTag().getBoolean(CONFIRM_HEAD_TAG)) return false;
+        if (state != State.NIGHT) return false;
+
+        UUID uuid = player.getUUID();
+        if (roleAssignments.get(uuid) != Role.witness) return false;
+        if (witnessConfirmed) return false;
+        if (!uuid.equals(nightWitnessUuid)) return false;
+        // cuma bisa konfirmasi kalo lagi di jendela liat (mata udah dibuka)
+        if (nightBlindfolded.contains(uuid)) return false;
+
+        witnessConfirmed = true;
+        stack.shrink(1);
+
+        for (UUID kUuid : nightKillers) {
+            ServerPlayer kp = serverRef.getPlayerList().getPlayer(kUuid);
+            if (kp != null) removeGlow(kp);
+        }
+        com.deception.network.ModNetworking.broadcastNightActionBar(Component.empty());
+
+        putBlindfold(player);
+        nightBlindfolded.add(uuid);
+
+        com.deception.network.ModNetworking.broadcastNightTitle(
+                Component.literal("Witness tutup mata").withStyle(ChatFormatting.RED),
+                Component.empty(), 10, 40, 10);
+
+        nightWakeAllAt = nightTicksElapsed + NIGHT_PRE_WAKE_HOLD;
+        nightDoneAt = nightWakeAllAt + NIGHT_WAKE_HOLD;
+
+        player.sendSystemMessage(Component.literal("Konfirmasi diterima!").withStyle(ChatFormatting.GREEN));
         return true;
     }
 
@@ -981,7 +1139,7 @@ public class GameManager {
         }
 
         List<UUID> players = new ArrayList<>(allPlayers);
-        players.removeIf(uuid -> roleAssignments.get(uuid) == Role.FORENSIC_SCIENTIST);
+        players.removeIf(uuid -> roleAssignments.get(uuid) == Role.forensic_scientist);
 
         List<String> meansPool = new ArrayList<>();
         List<String> cluePool = new ArrayList<>();
@@ -1209,6 +1367,12 @@ public class GameManager {
             spinRoleTitle();
             if (shuffleTicksLeft <= 0) {
                 revealRoles(serverRef);
+                state = State.REVEAL_DELAY;
+                revealDelayTicks = NIGHT_REVEAL_DELAY;  
+            }
+        } else if (state == State.REVEAL_DELAY) {
+            revealDelayTicks--;
+            if (revealDelayTicks <= 0) {
                 startNightSequence(serverRef);
             }
         } else if (state == State.NIGHT) {

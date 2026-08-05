@@ -110,7 +110,7 @@ public class NightTitleClientState {
             if (alpha > 0f) {
                 int a = Math.round(alpha * 255f) & 0xFF;
                 int color = (a << 24) | 0xFFFFFF;
-                int y = screenHeight - 44;
+                int y = screenHeight - 60;
 
                 // Animasi titik jalan: "item" -> "item." -> "item.." -> "item..." -> ulang
                 int dotCount = (int) ((clientTickCounter / DOT_CYCLE_TICKS) % 4);

@@ -36,9 +36,11 @@ public class BlindfoldStatePacket {
     public static void handle(BlindfoldStatePacket msg, Supplier<NetworkEvent.Context> ctxSupplier) {
         NetworkEvent.Context ctx = ctxSupplier.get();
         ctx.enqueueWork(() -> {
-            // Cuma jalan di physical client (packet ini emang cuma dikirim
-            // ke client), aman panggil class client-only di sini.
-            com.deception.init.BlindfoldClientState.startTransition(msg.closing);
+            if (msg.closing) {
+                com.deception.init.BlindfoldClientState.startTransition(true);
+            } else {
+                com.deception.init.BlindfoldClientState.startTransition(false);
+            }
         });
         ctx.setPacketHandled(true);
     }

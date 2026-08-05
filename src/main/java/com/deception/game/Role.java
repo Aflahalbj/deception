@@ -1,11 +1,11 @@
 package com.deception.game;
 
 public enum Role {
-    FORENSIC_SCIENTIST("Forensic Scientist"),
-    MURDERER("Murderer"),
-    ACCOMPLICE("Accomplice"),
-    WITNESS("Witness"),
-    INVESTIGATOR("Investigator");
+    forensic_scientist("Forensic Scientist"),
+    murderer("Murderer"),
+    accomplice("Accomplice"),
+    witness("Witness"),
+    investigator("Investigator");
 
     private final String displayName;
 

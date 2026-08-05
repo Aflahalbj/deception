@@ -110,16 +110,10 @@ public class DeceptionMod {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         
         if (GameManager.get().getState() == GameManager.State.NIGHT) {
-            UUID uuid = player.getUUID();
-            if (GameManager.get().getRoleAssignments().get(uuid) == Role.MURDERER && 
-                !GameManager.get().isMurdererConfirmed()) {  // Ganti jadi getter
-                
-                // Cek offhand ada confirm head
-                ItemStack offhand = player.getOffhandItem();
-                if (GameManager.get().isConfirmHead(offhand)) {
-                    event.setCanceled(true);
-                    player.sendSystemMessage(Component.literal("Kepala konfirmasi tidak bisa dipindah!").withStyle(ChatFormatting.RED));
-                }
+            ItemStack offhand = player.getOffhandItem();
+            if (GameManager.get().isConfirmHead(offhand)) {
+                event.setCanceled(true);
+                player.sendSystemMessage(Component.literal("Kepala konfirmasi tidak bisa dipindah!").withStyle(ChatFormatting.RED));
             }
         }
     }
@@ -129,22 +123,17 @@ public class DeceptionMod {
     public void onContainerClick(net.minecraftforge.event.entity.player.PlayerContainerEvent event) {
         if (event.getEntity() instanceof ServerPlayer player) {
             if (GameManager.get().getState() == GameManager.State.NIGHT) {
-                UUID uuid = player.getUUID();
-                if (GameManager.get().getRoleAssignments().get(uuid) == Role.MURDERER && 
-                    !GameManager.get().isMurdererConfirmed()) {
-                    
-                    // Cek kalo ada confirm head di inventory, paksa balik ke slot 0
-                    for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
-                        ItemStack stack = player.getInventory().getItem(i);
-                        if (GameManager.get().isConfirmHead(stack)) {
-                            if (i != 0) {
-                                ItemStack mainHand = player.getInventory().items.get(0);
-                                player.getInventory().items.set(0, stack);
-                                player.getInventory().items.set(i, mainHand);
-                                player.sendSystemMessage(Component.literal("Kepala konfirmasi tidak bisa dipindah!").withStyle(ChatFormatting.RED));
-                            }
-                            break;
+                // Cek kalo ada confirm head di inventory, paksa balik ke slot 0
+                for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                    ItemStack stack = player.getInventory().getItem(i);
+                    if (GameManager.get().isConfirmHead(stack)) {
+                        if (i != 0) {
+                            ItemStack mainHand = player.getInventory().items.get(0);
+                            player.getInventory().items.set(0, stack);
+                            player.getInventory().items.set(i, mainHand);
+                            player.sendSystemMessage(Component.literal("Kepala konfirmasi tidak bisa dipindah!").withStyle(ChatFormatting.RED));
                         }
+                        break;
                     }
                 }
             }
@@ -172,6 +161,8 @@ public class DeceptionMod {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
 
         if (GameManager.get().onMurdererConfirmHead(player, event.getItemStack())) {
+            event.setCanceled(true);
+        } else if (GameManager.get().onWitnessConfirmHead(player, event.getItemStack())) {
             event.setCanceled(true);
         }
     }
