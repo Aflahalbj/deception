@@ -227,7 +227,7 @@ public class ModBlocks {
             "means_akuarium",
             "means_alat_pemadam",
             "means_alkohol_metanol",
-            "means_anak_tangga_patah",
+            "means_tangga_rusak",
             "means_arsenik",
             "means_atap_bocor",
             "means_bak_mandi",

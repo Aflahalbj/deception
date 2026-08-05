@@ -1,6 +1,7 @@
 package com.deception.game;
 
 import com.deception.command.RoleDescriptions;
+import com.deception.init.ClusterData;
 import com.deception.init.ModBlocks;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
@@ -20,14 +21,26 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.AttachFace;
 import net.minecraftforge.registries.RegistryObject;
 import com.deception.block.ClueBlock;
+import com.mojang.authlib.GameProfile;
+import com.mojang.authlib.properties.Property;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.FloatTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.world.entity.Display;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.Difficulty;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
+import net.minecraftforge.common.ForgeMod;
 import org.joml.Quaternionf;
 
 import java.util.*;
@@ -35,7 +48,7 @@ import java.util.*;
 public class GameManager {
 
     public enum State {
-        IDLE, COUNTDOWN, SHUFFLE, DISCUSS, RUNNING
+        IDLE, COUNTDOWN, SHUFFLE, NIGHT, DISCUSS, RUNNING
     }
 
     private static final GameManager INSTANCE = new GameManager();
@@ -47,6 +60,7 @@ public class GameManager {
     private State state = State.IDLE;
     private final LinkedHashSet<UUID> registeredPlayers = new LinkedHashSet<>();
     private final Map<UUID, String> playerNames = new HashMap<>();
+    public static final Map<BlockPos, ClusterData> CLUSTERS = new HashMap<>();
     private final Map<UUID, Role> roleAssignments = new HashMap<>();
 
     // override manual dari /customrole; null = pakai default tabel komposisi
@@ -64,67 +78,77 @@ public class GameManager {
     private int lastCountdownSecondShown = -1;
 
     // ---------- Shuffle role (animasi "ngocok" peran) ----------
-    private static final int SHUFFLE_DURATION_TICKS = 60; // 3 detik
+    private static final int SHUFFLE_DURATION_TICKS = 100; // 5 detik
     private int shuffleTicksLeft = 0;
     private List<Role> activeRolePool = new ArrayList<>();
 
     private int discussTicksLeft = 0;
 
+    // ---------- Night sequence (tutup mata -> murderer/accomplice pilih item -> witness liat) ----------
+    private static final int NIGHT_CLOSE_HOLD = 60;    // 3 detik "semua tutup mata" sebelum killer dibangunin
+    private static final int NIGHT_WITNESS_HOLD = 60;  // 3 detik witness liat killer nyala (glowing)
+    private static final int NIGHT_WAKE_HOLD = 20;     // 1 detik title "semua bangun" sebelum lanjut discuss
+    private final Set<UUID> confirmedMurderers = new HashSet<>();
+
+    private int nightTicksElapsed;
+    private int nightKillersWakeAt;
+    private int nightWitnessRevealAt;
+    private int nightWitnessEndAt;
+    private int nightWakeAllAt;
+    private int nightDoneAt;
+    private final Set<UUID> nightBlindfolded = new HashSet<>();
+    private final List<UUID> nightKillers = new ArrayList<>();
+    private UUID nightWitnessUuid;
+    private boolean murdererConfirmed = false;
+
+    // ---------- Murderer pilih item means/clue asli pas night ----------
+    // 2 posisi: 1 untuk means, 1 untuk clue
+    private BlockPos murdererSelectedMeansBacking = null;
+    private BlockPos murdererSelectedClueBacking = null;
+
+    // reverse-lookup posisi block means/clue -> UUID pemilik cluster-nya
+    private final Map<BlockPos, UUID> clusterOwnerByPos = new HashMap<>();
+
+    private static final String MURDERER_CONFIRM_HEAD_TEXTURE =
+            "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvYjVhM2I0OWJlZWMzYWIyM2FlMGI2MGRhYjU2ZTljYzhmYTE2NzY5YTI1ODMwYjVkOGQ2YzQ2Mzc4ZjU0NDMwIn19fQ==";
+    private static final String CONFIRM_HEAD_TAG = "DeceptionConfirmHead";
+
+    private long globalTickCounter = 0;
+
     private MinecraftServer serverRef;
     private final Random shuffleRandom = new Random();
     private final List<UUID> spawnedHeadEntities = new ArrayList<>();
+    private final Map<UUID, HeadPlacement> headPlacementByOwner = new HashMap<>();
+    private final Map<UUID, List<UUID>> headEntitiesByOwner = new HashMap<>();
+    private Difficulty previousDifficulty;
 
     // ---------- Teleport + pasang clue/means random pas countdown selesai ----------
     private static final BlockPos ARENA_TELEPORT_POS = new BlockPos(119, -59, 179);
 
-    // tiap dinding: sumbu yang jalan sepanjang dinding, koordinat tetap
-    // (fixed axis), titik tengah, panjang, dan arah hadap block (ke dalam
-    // ruangan) pas ditempel.
-    private static final int MEANS_Y = -57; // baris atas
-    private static final int CLUE_Y = -58;  // baris bawah
-    private static final int HEAD_Y = MEANS_Y + 1; // baris kepala player, nempel di atas means
+    private static final int MEANS_Y = -57;
+    private static final int CLUE_Y = -58;
+    private static final int HEAD_Y = MEANS_Y + 1;
 
-    // maksimal cluster per dinding kiri/kanan (dinding belakang cuma kepake
-    // kalau kiri+kanan udah penuh). Total maksimal 4+4+4 = 12, nyamain max
-    // player deception (4-12). tiap cluster lebar 4 block (4 means berjejer
-    // di atas, 4 clue berjejer di bawah)
     private static final int MAX_CLUSTERS_PER_SIDE_WALL = 4;
     private static final int CLUSTER_WIDTH = 4;
 
-    // jarak "maju" dikit dari permukaan dinding biar kepala gak z-fighting
-    // sama block dinding solid di belakangnya
     private static final float HEAD_SURFACE_INSET = 0.06F;
 
     private record WallSpec(String label, boolean alongX, int fixedCoord, int center, int length, Direction facing) {}
 
+    private record HeadPlacement(WallSpec wall, int[] columns) {}
+
     private static final WallSpec[] ARENA_WALLS = new WallSpec[]{
-            // kiri: sepanjang X, z tetap 189, tengah x=119, panjang 21, hadap ke dalam (utara)
             new WallSpec("kiri", true, 189, 120, 21, Direction.NORTH),
-            // kanan: sepanjang X, z tetap 169, tengah x=119, panjang 21, hadap ke dalam (selatan)
             new WallSpec("kanan", true, 169, 120, 21, Direction.SOUTH),
-            // belakang: sepanjang Z, x tetap 130, tengah z=179, panjang 21, hadap ke dalam (barat)
             new WallSpec("belakang", false, 130, 179, 21, Direction.WEST),
     };
 
-    /**
-     * Susun clusterCount cluster selebar CLUSTER_WIDTH block, dikasih gap
-     * eksplisit (minimal 2 block) antar cluster yang berdampingan, terus
-     * seluruh barisan (cluster + gap) dimentokin ke ujung BELAKANG dinding
-     * (offset positif, sisi deket dinding belakang) -- bukan di-center.
-     * Hasil: array of int[], tiap elemen isinya CLUSTER_WIDTH offset kolom
-     * yang berdampingan buat 1 cluster.
-     */
     private static int[][] clusterColumnGroups(int length, int clusterCount) {
         if (clusterCount <= 0) return new int[0][];
 
-        // gap dihitung eksplisit dari sisa ruang dibagi rata ke celah
-        // antar cluster -- minimal 2 block, biar keliatan jelas ada jarak
-        // (dulu bisa jatuh ke 1 block doang, keliatan dempet)
-        int gap = clusterCount > 1
-                ? 1 : 0;
+        int gap = clusterCount > 1 ? 1 : 0;
         int totalWidth = clusterCount * CLUSTER_WIDTH + gap * (clusterCount - 1);
-
-        // mentokin ke ujung belakang (offset positif), bukan center
         int startCol = -totalWidth / 2;
 
         int[][] groups = new int[clusterCount][CLUSTER_WIDTH];
@@ -137,18 +161,11 @@ public class GameManager {
         return groups;
     }
 
-    /**
-     * Berapa cluster yang kepake di tiap dinding (kiri, kanan, belakang)
-     * berdasarkan JUMLAH PLAYER — bukan fixed 4/dinding lagi. Kiri & kanan
-     * diisi rata dulu (maks MAX_CLUSTERS_PER_SIDE_WALL / dinding), sisanya
-     * baru dilempar ke belakang. Kalau ganjil, kiri kebagian 1 lebih banyak.
-     * Contoh: 4 player -> [2, 2, 0]. 9 player -> [4, 4, 1].
-     */
     private static int[] computeClusterCountsPerWall(int totalPlayers) {
         int kiri = Math.min(MAX_CLUSTERS_PER_SIDE_WALL, (int) Math.ceil(totalPlayers / 2.0));
         int kanan = Math.min(MAX_CLUSTERS_PER_SIDE_WALL, totalPlayers - kiri);
         int belakang = totalPlayers - kiri - kanan;
-        return new int[]{kiri, kanan, belakang}; // urutannya harus ngikutin ARENA_WALLS
+        return new int[]{kiri, kanan, belakang};
     }
 
     // ---------- Registrasi ----------
@@ -208,6 +225,23 @@ public class GameManager {
         }
     }
 
+    // ---------- Set role untuk testing ----------
+
+    public boolean setPlayerRole(String playerName, Role role) {
+        UUID targetUuid = null;
+        for (Map.Entry<UUID, String> entry : playerNames.entrySet()) {
+            if (entry.getValue().equalsIgnoreCase(playerName)) {
+                targetUuid = entry.getKey();
+                break;
+            }
+        }
+        if (targetUuid == null || !registeredPlayers.contains(targetUuid)) {
+            return false;
+        }
+        roleAssignments.put(targetUuid, role);
+        return true;
+    }
+
     // ---------- Forensic scientist & timer ----------
 
     public void setForensicScientistMode(String mode) {
@@ -230,40 +264,116 @@ public class GameManager {
 
     // ---------- Start / stop ----------
 
-    public boolean startGame(MinecraftServer server) {
+    public enum StartResult {
+        OK, ALREADY_RUNNING, INVALID_PLAYER_COUNT, PLAYER_OFFLINE
+    }
+
+    public StartResult startGame(MinecraftServer server) {
         if (state != State.IDLE) {
-            return false;
+            return StartResult.ALREADY_RUNNING;
         }
         if (registeredPlayers.size() < 4 || registeredPlayers.size() > 12) {
-            return false;
+            return StartResult.INVALID_PLAYER_COUNT;
+        }
+        if (!getOfflineRegisteredPlayerNames(server).isEmpty()) {
+            return StartResult.PLAYER_OFFLINE;
         }
         this.serverRef = server;
         this.state = State.COUNTDOWN;
         this.countdownTicks = COUNTDOWN_SECONDS * 20;
         this.lastCountdownSecondShown = -1;
-        return true;
+        server.setPvpAllowed(false);
+        this.previousDifficulty = server.getWorldData().getDifficulty();
+        server.setDifficulty(Difficulty.PEACEFUL, true);
+
+        for (UUID uuid : registeredPlayers) {
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player != null) {
+                player.setGameMode(GameType.ADVENTURE);
+                AttributeInstance blockReach = player.getAttribute(ForgeMod.BLOCK_REACH.get());
+                if (blockReach != null) {
+                    blockReach.setBaseValue(30.0D);
+                }
+            }
+        }
+        return StartResult.OK;
+    }
+
+    public List<String> getOfflineRegisteredPlayerNames(MinecraftServer server) {
+        List<String> offline = new ArrayList<>();
+        for (UUID uuid : registeredPlayers) {
+            if (server.getPlayerList().getPlayer(uuid) == null) {
+                offline.add(getPlayerName(uuid));
+            }
+        }
+        return offline;
+    }
+
+    public List<String> getRegisteredPlayerStatusLines(MinecraftServer server) {
+        List<String> lines = new ArrayList<>();
+        for (UUID uuid : registeredPlayers) {
+            boolean online = server.getPlayerList().getPlayer(uuid) != null;
+            lines.add(getPlayerName(uuid) + (online ? " (online)" : " (offline)"));
+        }
+        return lines;
     }
 
     public void stopGame(MinecraftServer server) {
+        abortGame(server, Component.literal("Game dihentikan oleh admin.").withStyle(ChatFormatting.RED));
+    }
+
+    private void abortGame(MinecraftServer server, Component reason) {
         this.state = State.IDLE;
         this.roleAssignments.clear();
         this.countdownTicks = 0;
         this.lastCountdownSecondShown = -1;
         this.shuffleTicksLeft = 0;
         this.discussTicksLeft = 0;
+        this.nightTicksElapsed = 0;
+        this.murdererConfirmed = false;
+        this.murdererSelectedMeansBacking = null;
+        this.murdererSelectedClueBacking = null;
+        this.nightWitnessRevealAt = Integer.MAX_VALUE;
+        this.nightWitnessEndAt = Integer.MAX_VALUE;
+        this.nightWakeAllAt = Integer.MAX_VALUE;
+        this.nightDoneAt = Integer.MAX_VALUE;
 
         MinecraftServer target = server != null ? server : serverRef;
         if (target != null) {
+            target.setPvpAllowed(true);
+            if (previousDifficulty != null) {
+                target.setDifficulty(previousDifficulty, true);
+            }
+            
+            // Balikin backing ke warna asli sebelum restoreArena
+            ServerLevel level = target.overworld();
+            if (murdererSelectedMeansBacking != null) {
+                restoreBacking(level, murdererSelectedMeansBacking);
+            }
+            if (murdererSelectedClueBacking != null) {
+                restoreBacking(level, murdererSelectedClueBacking);
+            }
+            
             restoreArena(target);
-            broadcast(target, Component.literal("Game dihentikan.").withStyle(ChatFormatting.RED));
+            for (UUID uuid : registeredPlayers) {
+                ServerPlayer player = target.getPlayerList().getPlayer(uuid);
+                if (player != null) {
+                    player.setGameMode(GameType.SURVIVAL);
+                    removeBlindfold(player);
+                    removeGlow(player);
+                    AttributeInstance blockReach = player.getAttribute(ForgeMod.BLOCK_REACH.get());
+                    if (blockReach != null) {
+                        blockReach.setBaseValue(blockReach.getAttribute().getDefaultValue());
+                    }
+                }
+            }
+            nightBlindfolded.clear();
+            nightKillers.clear();
+            nightWitnessUuid = null;
+            broadcast(target, reason);
         }
     }
 
-    /**
-     * Balikin arena ke kondisi kosong: hapus semua block means/clue +
-     * backing merah/biru di 3 dinding (diganti deepslate_tiles), dan
-     * despawn semua item display kepala player yang pernah dipasang.
-     */
     private void restoreArena(MinecraftServer server) {
         ServerLevel level = server.overworld();
 
@@ -273,8 +383,21 @@ public class GameManager {
                 entity.discard();
             }
         }
+        for (Entity entity : level.getEntities().getAll()) {
+            if (entity.getTags().contains("deception_display")) {
+                entity.discard();
+            }
+        }
         spawnedHeadEntities.clear();
+        headPlacementByOwner.clear();
+        headEntitiesByOwner.clear();
+        CLUSTERS.clear();
+        clusterOwnerByPos.clear();
 
+        resetArenaBlocks(level);
+    }
+
+    private void resetArenaBlocks(ServerLevel level) {
         BlockState deepslateTiles = Blocks.DEEPSLATE_TILES.defaultBlockState();
         BlockState air = Blocks.AIR.defaultBlockState();
         for (WallSpec wall : ARENA_WALLS) {
@@ -294,11 +417,51 @@ public class GameManager {
         }
     }
 
-    /**
-     * Hitung role apa aja yang bakal aktif di game ini (berdasarkan jumlah
-     * player teregistrasi + override /customrole), dipakai buat animasi
-     * kocokan biar cuma nge-flash role yang beneran ada, bukan semua enum.
-     */
+    private AABB computeArenaBounds() {
+        double minX = Double.MAX_VALUE, maxX = -Double.MAX_VALUE;
+        double minZ = Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
+        for (WallSpec wall : ARENA_WALLS) {
+            if (wall.alongX()) {
+                minX = Math.min(minX, wall.center() - wall.length() / 2.0);
+                maxX = Math.max(maxX, wall.center() + wall.length() / 2.0);
+                minZ = Math.min(minZ, wall.fixedCoord());
+                maxZ = Math.max(maxZ, wall.fixedCoord());
+            } else {
+                minZ = Math.min(minZ, wall.center() - wall.length() / 2.0);
+                maxZ = Math.max(maxZ, wall.center() + wall.length() / 2.0);
+                minX = Math.min(minX, wall.fixedCoord());
+                maxX = Math.max(maxX, wall.fixedCoord());
+            }
+        }
+        double pad = 3;
+        return new AABB(minX - pad, CLUE_Y - 3, minZ - pad, maxX + pad, HEAD_Y + 3, maxZ + pad);
+    }
+
+    public void forceCleanupOnStartup(MinecraftServer server) {
+        this.state = State.IDLE;
+        ServerLevel level = server.overworld();
+
+        resetArenaBlocks(level);
+
+        for (UUID headId : spawnedHeadEntities) {
+            var entity = level.getEntity(headId);
+            if (entity != null) {
+                entity.discard();
+            }
+        }
+        for (Entity entity : level.getEntities().getAll()) {
+            if (entity.getTags().contains("deception_display")) {
+                entity.discard();
+            }
+        }
+
+        spawnedHeadEntities.clear();
+        headPlacementByOwner.clear();
+        headEntitiesByOwner.clear();
+        CLUSTERS.clear();
+        clusterOwnerByPos.clear();
+    }
+
     private List<Role> computeActiveRolePool() {
         RoleComposition composition = new RoleComposition(registeredPlayers.size());
         if (accompliceOverride != null) composition.setAccompliceEnabled(accompliceOverride);
@@ -314,27 +477,72 @@ public class GameManager {
         return pool;
     }
 
-    private void assignRoles(MinecraftServer server) {
+    private void computeRoleAssignments() {
         RoleComposition composition = new RoleComposition(registeredPlayers.size());
         if (accompliceOverride != null) composition.setAccompliceEnabled(accompliceOverride);
         if (witnessOverride != null) composition.setWitnessEnabled(witnessOverride);
 
         Map<Role, Integer> counts = composition.resolve();
 
-        List<UUID> pool = new ArrayList<>(registeredPlayers);
-        Collections.shuffle(pool);
-
-        roleAssignments.clear();
-        int index = 0;
-        for (Map.Entry<Role, Integer> entry : counts.entrySet()) {
-            for (int i = 0; i < entry.getValue(); i++) {
-                if (index >= pool.size()) break;
-                roleAssignments.put(pool.get(index), entry.getKey());
-                index++;
+        // Cek apakah ada role yang udah di-set manual via /deception setrole
+        Map<UUID, Role> manualRoles = new HashMap<>();
+        for (UUID uuid : registeredPlayers) {
+            if (roleAssignments.containsKey(uuid)) {
+                manualRoles.put(uuid, roleAssignments.get(uuid));
             }
         }
 
-        // Override forensic scientist kalau diminta spesifik (bukan random)
+        // Kalo ada manual role, kita adjust counts-nya
+        if (!manualRoles.isEmpty()) {
+            // Validasi: cek apakah role yang di-set manual valid
+            for (Role role : manualRoles.values()) {
+                int currentCount = counts.getOrDefault(role, 0);
+                if (currentCount > 0) {
+                    counts.put(role, currentCount - 1);
+                } else {
+                    // Kalo role udah penuh, override tetap dipake tapi kita kurangi dari Investigator
+                    counts.put(Role.INVESTIGATOR, counts.getOrDefault(Role.INVESTIGATOR, 0) - 1);
+                    if (counts.get(Role.INVESTIGATOR) < 0) counts.put(Role.INVESTIGATOR, 0);
+                }
+            }
+            
+            // Hapus player yang udah di-set manual dari pool
+            List<UUID> pool = new ArrayList<>(registeredPlayers);
+            pool.removeAll(manualRoles.keySet());
+            
+            // Random shuffle sisa pool
+            Collections.shuffle(pool);
+            
+            // Assign role manual dulu
+            roleAssignments.clear();
+            roleAssignments.putAll(manualRoles);
+            
+            // Assign sisa role ke pool
+            int index = 0;
+            for (Map.Entry<Role, Integer> entry : counts.entrySet()) {
+                for (int i = 0; i < entry.getValue(); i++) {
+                    if (index >= pool.size()) break;
+                    roleAssignments.put(pool.get(index), entry.getKey());
+                    index++;
+                }
+            }
+        } else {
+            // Normal: random semua
+            List<UUID> pool = new ArrayList<>(registeredPlayers);
+            Collections.shuffle(pool);
+            
+            roleAssignments.clear();
+            int index = 0;
+            for (Map.Entry<Role, Integer> entry : counts.entrySet()) {
+                for (int i = 0; i < entry.getValue(); i++) {
+                    if (index >= pool.size()) break;
+                    roleAssignments.put(pool.get(index), entry.getKey());
+                    index++;
+                }
+            }
+        }
+
+        // Override forensic scientist (ini tetep jalan kalo ada mode spesifik)
         if (!"random".equalsIgnoreCase(forensicScientistMode)) {
             UUID targetFs = null;
             for (Map.Entry<UUID, String> e : playerNames.entrySet()) {
@@ -354,65 +562,398 @@ public class GameManager {
                 if (currentFs != null && !currentFs.equals(targetFs)) {
                     Role targetOldRole = roleAssignments.get(targetFs);
                     roleAssignments.put(targetFs, Role.FORENSIC_SCIENTIST);
-                    roleAssignments.put(currentFs, targetOldRole);
+                    roleAssignments.put(currentFs, targetOldRole != null ? targetOldRole : Role.INVESTIGATOR);
                 }
             }
         }
+    }
 
-        // Reveal final: title nama role, lalu di chat "Peran kamu adalah" + penjelasan singkat
+    private void revealRoles(MinecraftServer server) {
         for (Map.Entry<UUID, Role> entry : roleAssignments.entrySet()) {
             ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
             if (player != null) {
-                Component title = Component.literal(entry.getValue().getDisplayName())
-                        .withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD);
-                Component subtitle = Component.literal("Peran kamu!").withStyle(ChatFormatting.YELLOW);
+                Component title = Component.literal("Peran kamu!").withStyle(ChatFormatting.GOLD);
+                Component subtitle = Component.literal(entry.getValue().getDisplayName())
+                        .withStyle(ChatFormatting.YELLOW);
                 sendTitle(player, title, subtitle, 5, 50, 15);
-                playSoundTo(player, SoundEvents.PLAYER_LEVELUP, SoundSource.MASTER, 1.0F, 1.0F);
+                playSoundTo(player, SoundEvents.UI_TOAST_CHALLENGE_COMPLETE, SoundSource.MASTER, 3.0F, 1.0F);
 
                 player.sendSystemMessage(Component.literal("Peran kamu adalah: " + entry.getValue().getDisplayName())
-                        .withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD));
+                        .withStyle(ChatFormatting.GOLD));
                 player.sendSystemMessage(Component.literal(RoleDescriptions.get(entry.getValue()))
                         .withStyle(ChatFormatting.GRAY));
             }
         }
     }
 
-    /**
-     * Title countdown sebelum peran dibagikan. Cuma title + subtitle, gak ada
-     * spam chat. Dipanggil sekali tiap detik berubah (bukan tiap tick) biar
-     * subtitle-nya keganti angka dengan rapi, plus sound tiap detik.
-     */
-    private void showCountdownTitle(int secondsLeft) {
-        Component title = Component.literal("Game dimulai dalam").withStyle(ChatFormatting.YELLOW, ChatFormatting.BOLD);
-        Component subtitle = Component.literal(String.valueOf(secondsLeft)).withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD);
+    private static final int NIGHT_PRECLOSE_DELAY = 60;
+
+    private final Set<UUID> nightPendingBlindfold = new HashSet<>();
+
+    private void startNightSequence(MinecraftServer server) {
+        this.state = State.NIGHT;
+        this.nightTicksElapsed = 0;
+        this.murdererConfirmed = false;
+        this.murdererSelectedMeansBacking = null;
+        this.murdererSelectedClueBacking = null;
+
+        UUID fsUuid = null;
+        nightKillers.clear();
+        nightWitnessUuid = null;
+        for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
+            if (e.getValue() == Role.FORENSIC_SCIENTIST) fsUuid = e.getKey();
+            else if (e.getValue() == Role.MURDERER || e.getValue() == Role.ACCOMPLICE) nightKillers.add(e.getKey());
+            else if (e.getValue() == Role.WITNESS) nightWitnessUuid = e.getKey();
+        }
+
+        nightKillersWakeAt = NIGHT_PRECLOSE_DELAY + NIGHT_CLOSE_HOLD;
+        
+        boolean hasWitness = nightWitnessUuid != null;
+        nightWitnessRevealAt = Integer.MAX_VALUE;
+        nightWitnessEndAt = Integer.MAX_VALUE;
+        nightWakeAllAt = Integer.MAX_VALUE;
+        nightDoneAt = Integer.MAX_VALUE;
+
+        nightBlindfolded.clear();
+        nightPendingBlindfold.clear();
         for (UUID uuid : registeredPlayers) {
-            ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
-            if (player != null) {
-                sendTitle(player, title, subtitle, 0, 20, 5);
-                playSoundTo(player, SoundEvents.NOTE_BLOCK_PLING.value(), SoundSource.MASTER, 1.0F, 1.0F);
+            if (uuid.equals(fsUuid)) continue;
+            nightPendingBlindfold.add(uuid);
+        }
+
+        com.deception.network.ModNetworking.broadcastNightTitle(
+                Component.literal("Semua orang tutup mata").withStyle(ChatFormatting.DARK_GRAY),
+                Component.empty(), 10, NIGHT_PRECLOSE_DELAY + NIGHT_CLOSE_HOLD - 20, 10);
+    }
+
+    private void tickNightSequence() {
+        nightTicksElapsed++;
+
+        for (UUID uuid : nightBlindfolded) {
+            ServerPlayer bp = serverRef.getPlayerList().getPlayer(uuid);
+            if (bp != null && bp.getItemBySlot(EquipmentSlot.HEAD).getItem() != Items.NOTE_BLOCK) {
+                bp.setItemSlot(EquipmentSlot.HEAD, createBlindfoldItem());
+            }
+        }
+
+        if (nightTicksElapsed == NIGHT_PRECLOSE_DELAY) {
+            for (UUID uuid : nightPendingBlindfold) {
+                ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
+                if (p != null) {
+                    putBlindfold(p);
+                    nightBlindfolded.add(uuid);
+                }
+            }
+        }
+
+        if (nightTicksElapsed == nightKillersWakeAt) {
+            String killerLabel = nightKillers.size() > 1 ? "Murderer & Accomplice" : "Murderer";
+            com.deception.network.ModNetworking.broadcastNightTitle(
+                    Component.literal(killerLabel + " buka mata").withStyle(ChatFormatting.RED),
+                    Component.empty(), 10, 40, 10);
+            
+            for (UUID uuid : nightKillers) {
+                ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
+                if (p != null) {
+                    removeBlindfold(p);
+                    nightBlindfolded.remove(uuid);
+                    if (roleAssignments.get(uuid) == Role.MURDERER) {
+                        giveConfirmHead(p);
+                    }
+                }
+            }
+            com.deception.network.ModNetworking.broadcastNightActionBar(
+                    Component.literal("Menunggu murderer memilih item").withStyle(ChatFormatting.RED));
+        }
+
+        for (UUID uuid : nightKillers) {
+            ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
+            if (p != null && roleAssignments.get(uuid) == Role.MURDERER && !murdererConfirmed) {
+                lockMurdererInventory(p);
+            }
+        }
+
+        if (nightTicksElapsed == nightWitnessRevealAt && nightWitnessRevealAt != Integer.MAX_VALUE) {
+            com.deception.network.ModNetworking.broadcastNightActionBar(Component.empty());
+            
+            if (nightWitnessUuid != null) {
+                ServerPlayer witnessPlayer = serverRef.getPlayerList().getPlayer(nightWitnessUuid);
+                if (witnessPlayer != null) {
+                    removeBlindfold(witnessPlayer);
+                    nightBlindfolded.remove(nightWitnessUuid);
+                }
+                com.deception.network.ModNetworking.broadcastNightTitle(
+                        Component.literal("Perhatikan baik-baik").withStyle(ChatFormatting.AQUA),
+                        Component.empty(), 10, NIGHT_WITNESS_HOLD, 10);
+                
+                for (UUID uuid : nightKillers) {
+                    ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
+                    if (p != null) applyGlow(p);
+                }
+            }
+        }
+
+        if (nightTicksElapsed == nightWitnessEndAt && nightWitnessEndAt != Integer.MAX_VALUE) {
+            if (nightWitnessUuid != null) {
+                for (UUID uuid : nightKillers) {
+                    ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
+                    if (p != null) removeGlow(p);
+                }
+                ServerPlayer witnessPlayer = serverRef.getPlayerList().getPlayer(nightWitnessUuid);
+                if (witnessPlayer != null) {
+                    putBlindfold(witnessPlayer);
+                    nightBlindfolded.add(nightWitnessUuid);
+                }
+            }
+        }
+
+        if (nightTicksElapsed == nightWakeAllAt && nightWakeAllAt != Integer.MAX_VALUE) {
+            for (UUID uuid : new ArrayList<>(nightBlindfolded)) {
+                ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
+                if (p != null) removeBlindfold(p);
+            }
+            nightBlindfolded.clear();
+            com.deception.network.ModNetworking.broadcastNightTitle(
+                    Component.literal("Semua orang bangun").withStyle(ChatFormatting.GOLD),
+                    Component.empty(), 10, NIGHT_WAKE_HOLD, 10);
+        }
+
+        if (nightTicksElapsed >= nightDoneAt && nightDoneAt != Integer.MAX_VALUE) {
+            state = State.DISCUSS;
+            discussTicksLeft = discussTimerSeconds * 20;
+            broadcast(serverRef, Component.literal("Diskusi dimulai.").withStyle(ChatFormatting.GREEN));
+        }
+    }
+
+    private void putBlindfold(ServerPlayer player) {
+        player.setItemSlot(EquipmentSlot.HEAD, createBlindfoldItem());
+        com.deception.network.ModNetworking.sendBlindfoldState(player, true);
+    }
+
+    private void removeBlindfold(ServerPlayer player) {
+        if (player.getItemBySlot(EquipmentSlot.HEAD).getItem() == Items.NOTE_BLOCK) {
+            player.setItemSlot(EquipmentSlot.HEAD, ItemStack.EMPTY);
+        }
+        com.deception.network.ModNetworking.sendBlindfoldState(player, false);
+    }
+
+    private ItemStack createBlindfoldItem() {
+        ItemStack helmet = new ItemStack(Items.NOTE_BLOCK);
+        helmet.setHoverName(Component.literal("Mata Tertutup").withStyle(ChatFormatting.DARK_GRAY));
+        return helmet;
+    }
+
+    private void giveConfirmHead(ServerPlayer player) {
+        ItemStack head = new ItemStack(Items.PLAYER_HEAD);
+        head.setHoverName(Component.literal("Konfirmasi Pilihan").withStyle(ChatFormatting.GREEN));
+
+        GameProfile fakeProfile = new GameProfile(UUID.randomUUID(), "confirm");
+        fakeProfile.getProperties().put("textures", new Property("textures", MURDERER_CONFIRM_HEAD_TEXTURE));
+
+        CompoundTag tag = head.getOrCreateTag();
+        tag.put("SkullOwner", NbtUtils.writeGameProfile(new CompoundTag(), fakeProfile));
+        tag.putBoolean(CONFIRM_HEAD_TAG, true);
+
+        player.getInventory().add(head);
+    }
+
+    public boolean isConfirmHead(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        if (!stack.hasTag()) return false;
+        return stack.getTag().getBoolean(CONFIRM_HEAD_TAG);
+    }
+
+    public void lockMurdererInventory(ServerPlayer player) {
+        UUID uuid = player.getUUID();
+        if (roleAssignments.get(uuid) != Role.MURDERER) return;
+        if (murdererConfirmed) return;
+        if (state != State.NIGHT) return;
+        
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (isConfirmHead(stack)) {
+                if (i != 0) {
+                    ItemStack mainHand = player.getInventory().items.get(0);
+                    player.getInventory().items.set(0, stack);
+                    player.getInventory().items.set(i, mainHand);
+                    player.sendSystemMessage(Component.literal("Kepala konfirmasi tidak bisa dipindah!").withStyle(ChatFormatting.RED));
+                }
+                break;
             }
         }
     }
 
+    public boolean canDropItem(ServerPlayer player, ItemStack stack) {
+        if (state != State.NIGHT) return true;
+        if (roleAssignments.get(player.getUUID()) != Role.MURDERER) return true;
+        if (murdererConfirmed) return true;
+        if (isConfirmHead(stack)) return false;
+        return true;
+    }
+
+    public boolean canMoveItem(ServerPlayer player, ItemStack stack) {
+        if (state != State.NIGHT) return true;
+        if (roleAssignments.get(player.getUUID()) != Role.MURDERER) return true;
+        if (murdererConfirmed) return true;
+        if (isConfirmHead(stack)) return false;
+        return true;
+    }
+
+    public boolean isMurdererConfirmed() {
+        return murdererConfirmed;
+    }
+
     /**
-     * Animasi "ngocok" role — dipanggil tiap tick pas SHUFFLE, nge-flash nama
-     * role random (dari role yang beneran aktif di game ini) ke subtitle,
-     * title-nya tetep "Mengocok Peran". Ada sound tiap flash biar berasa
-     * kayak dadu diputer.
+     * Dipanggil dari event handler pas ServerPlayer klik kanan sebuah block.
      */
-    private void spinRoleTitle() {
-        if (activeRolePool.isEmpty() || shuffleTicksLeft % 3 != 0) {
-            return;
+    public boolean onMurdererClickClue(ServerPlayer player, ServerLevel level, BlockPos pos) {
+        if (state != State.NIGHT || murdererConfirmed) return false;
+
+        UUID uuid = player.getUUID();
+        if (roleAssignments.get(uuid) != Role.MURDERER) return false;
+        if (nightBlindfolded.contains(uuid)) return false;
+
+        BlockState clickedState = level.getBlockState(pos);
+        if (!(clickedState.getBlock() instanceof ClueBlock)) return false;
+
+        UUID clusterOwner = clusterOwnerByPos.get(pos);
+        if (clusterOwner == null || !clusterOwner.equals(uuid)) {
+            player.sendSystemMessage(Component.literal("Itu bukan cluster kamu.").withStyle(ChatFormatting.RED));
+            return true;
         }
-        Role randomRole = activeRolePool.get(shuffleRandom.nextInt(activeRolePool.size()));
-        Component title = Component.literal("Mengocok Peran").withStyle(ChatFormatting.LIGHT_PURPLE, ChatFormatting.BOLD);
-        Component subtitle = Component.literal(randomRole.getDisplayName()).withStyle(ChatFormatting.AQUA, ChatFormatting.BOLD);
+
+        if (clickedState.getValue(ClueBlock.FACE) != AttachFace.WALL) return false;
+        Direction facing = clickedState.getValue(ClueBlock.FACING);
+        BlockPos backingPos = pos.relative(facing.getOpposite());
+
+        // Tentukan ini means atau clue berdasarkan Y
+        boolean isMeans = pos.getY() == MEANS_Y;
+        
+        if (isMeans) {
+            if (murdererSelectedMeansBacking != null && !murdererSelectedMeansBacking.equals(backingPos)) {
+                restoreBacking(level, murdererSelectedMeansBacking);
+            }
+            level.setBlock(backingPos, Blocks.GREEN_CONCRETE.defaultBlockState(), 3);
+            murdererSelectedMeansBacking = backingPos;
+            player.sendSystemMessage(Component.literal("Means dipilih (" + getItemName(level, pos) + ").").withStyle(ChatFormatting.GREEN));
+        } else {
+            if (murdererSelectedClueBacking != null && !murdererSelectedClueBacking.equals(backingPos)) {
+                restoreBacking(level, murdererSelectedClueBacking);
+            }
+            level.setBlock(backingPos, Blocks.GREEN_CONCRETE.defaultBlockState(), 3);
+            murdererSelectedClueBacking = backingPos;
+            player.sendSystemMessage(Component.literal("Clue dipilih (" + getItemName(level, pos) + ").").withStyle(ChatFormatting.GREEN));
+        }
+
+        boolean bothSelected = (murdererSelectedMeansBacking != null && murdererSelectedClueBacking != null);
+        if (bothSelected) {
+            player.sendSystemMessage(Component.literal("Keduanya sudah dipilih! Klik kanan kepala konfirmasi.").withStyle(ChatFormatting.GOLD));
+        } else {
+            String next = murdererSelectedMeansBacking == null ? "means" : "clue";
+            player.sendSystemMessage(Component.literal("Pilih " + next + " juga, atau klik kanan kepala konfirmasi.").withStyle(ChatFormatting.YELLOW));
+        }
+        return true;
+    }
+
+    private String getItemName(ServerLevel level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        if (state.getBlock() instanceof ClueBlock) {
+            ItemStack stack = new ItemStack(state.getBlock().asItem());
+            return stack.getHoverName().getString();
+        }
+        return "item";
+    }
+
+    /**
+     * Dipanggil dari event handler pas ServerPlayer klik kanan (di udara)
+     * pake item yang ditandai CONFIRM_HEAD_TAG.
+     */
+    public boolean onMurdererConfirmHead(ServerPlayer player, ItemStack stack) {
+        if (!stack.hasTag() || !stack.getTag().getBoolean(CONFIRM_HEAD_TAG)) return false;
+        if (state != State.NIGHT) return false;
+
+        UUID uuid = player.getUUID();
+        if (roleAssignments.get(uuid) != Role.MURDERER) return false;
+        if (murdererConfirmed) return false;
+
+        if (murdererSelectedMeansBacking == null || murdererSelectedClueBacking == null) {
+            String missing = murdererSelectedMeansBacking == null ? "means" : "clue";
+            player.sendSystemMessage(Component.literal("Pilih " + missing + " dulu sebelum konfirmasi.").withStyle(ChatFormatting.RED));
+            return true;
+        }
+
+        murdererConfirmed = true;
+        stack.shrink(1);
+
+        boolean hasWitness = nightWitnessUuid != null;
+        if (hasWitness) {
+            nightWitnessRevealAt = nightTicksElapsed + 5;
+            nightWitnessEndAt = nightWitnessRevealAt + NIGHT_WITNESS_HOLD;
+            nightWakeAllAt = nightWitnessEndAt;
+            nightDoneAt = nightWakeAllAt + NIGHT_WAKE_HOLD;
+            broadcast(serverRef, Component.literal("Murderer telah memilih itemnya.").withStyle(ChatFormatting.GRAY));
+        } else {
+            nightWakeAllAt = nightTicksElapsed + 5;
+            nightDoneAt = nightWakeAllAt + NIGHT_WAKE_HOLD;
+        }
+
+        player.sendSystemMessage(Component.literal("Pilihan dikonfirmasi!").withStyle(ChatFormatting.GREEN));
+        return true;
+    }
+
+    private void restoreBacking(ServerLevel level, BlockPos pos) {
+        Block original = pos.getY() == MEANS_Y ? Blocks.RED_CONCRETE : Blocks.BLUE_CONCRETE;
+        level.setBlock(pos, original.defaultBlockState(), 3);
+    }
+
+    private void applyGlow(ServerPlayer player) {
+        player.addEffect(new MobEffectInstance(MobEffects.GLOWING, 999999, 0, false, false));
+    }
+
+    private void removeGlow(ServerPlayer player) {
+        player.removeEffect(MobEffects.GLOWING);
+    }
+
+    private void sendTitleTo(MinecraftServer server, Collection<UUID> uuids, Component title, Component subtitle, int fadeIn, int stay, int fadeOut) {
+        for (UUID uuid : uuids) {
+            ServerPlayer p = server.getPlayerList().getPlayer(uuid);
+            if (p != null) sendTitle(p, title, subtitle, fadeIn, stay, fadeOut);
+        }
+    }
+
+    private void sendActionBarTo(MinecraftServer server, Collection<UUID> uuids, Component message) {
+        for (UUID uuid : uuids) {
+            ServerPlayer p = server.getPlayerList().getPlayer(uuid);
+            if (p != null) p.connection.send(new ClientboundSetActionBarTextPacket(message));
+        }
+    }
+
+    private void showCountdownTitle(int secondsLeft) {
+        Component title = Component.literal("Game dimulai dalam").withStyle(ChatFormatting.GOLD);
+        Component subtitle = Component.literal(String.valueOf(secondsLeft)).withStyle(ChatFormatting.YELLOW);
         for (UUID uuid : registeredPlayers) {
             ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
             if (player != null) {
-                sendTitle(player, title, subtitle, 0, 4, 0);
-                float pitch = 0.8F + shuffleRandom.nextFloat() * 0.7F; // makin acak biar kerasa "ngocok"
-                playSoundTo(player, SoundEvents.NOTE_BLOCK_XYLOPHONE.value(), SoundSource.MASTER, 0.6F, pitch);
+                sendTitle(player, title, subtitle, 0, 20, 5);
+                playSoundTo(player, SoundEvents.NOTE_BLOCK_PLING.value(), SoundSource.MASTER, 3.0F, 1.0F);
+            }
+        }
+    }
+
+    private void spinRoleTitle() {
+        if (activeRolePool.isEmpty() || shuffleTicksLeft % 2 != 0) {
+            return;
+        }
+
+        Role randomRole = activeRolePool.get(shuffleRandom.nextInt(activeRolePool.size()));
+        Component subtitle = Component.literal(randomRole.getDisplayName())
+                .withStyle(ChatFormatting.YELLOW);
+
+        for (UUID uuid : registeredPlayers) {
+            ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
+            if (player != null) {
+                player.connection.send(new ClientboundSetSubtitleTextPacket(subtitle));
+                playSoundTo(player, SoundEvents.UI_BUTTON_CLICK.value(), SoundSource.MASTER, 3.0F, 1.2F);
             }
         }
     }
@@ -423,29 +964,15 @@ public class GameManager {
         player.connection.send(new ClientboundSetTitleTextPacket(title));
     }
 
-    /**
-     * Kirim sound ke 1 player spesifik di posisi dia sendiri (pakai null
-     * sebagai "excluded player" biar semua yang deket denger, termasuk dia).
-     */
     private void playSoundTo(ServerPlayer player, net.minecraft.sounds.SoundEvent sound, SoundSource source, float volume, float pitch) {
-        player.level().playSound(null, player.getX(), player.getY(), player.getZ(), sound, source, volume, pitch);
+        player.playNotifySound(sound, source, volume, pitch);
     }
 
-    /**
-     * Teleport semua player teregistrasi ke titik arena, lalu tempel
-     * cluster means (baris atas, y=-57) + clue (baris bawah, y=-58) --
-     * TAPI jumlah cluster yang dipasang sekarang ngikutin JUMLAH PLAYER,
-     * bukan fixed 4/dinding. Kiri & kanan diisi duluan sampai penuh (maks
-     * 4 cluster/dinding), baru sisanya ke belakang. Tiap cluster = 1
-     * player: dikasih backing blue concrete di belakang clue, red concrete
-     * di belakang means, plus kepala (skin) player itu ditaro di atas
-     * means-nya.
-     */
     private void teleportPlayersAndDecorateArena(MinecraftServer server) {
         ServerLevel level = server.overworld();
 
-        List<UUID> players = new ArrayList<>(registeredPlayers);
-        for (UUID uuid : players) {
+        List<UUID> allPlayers = new ArrayList<>(registeredPlayers);
+        for (UUID uuid : allPlayers) {
             ServerPlayer player = server.getPlayerList().getPlayer(uuid);
             if (player != null) {
                 player.teleportTo(ARENA_TELEPORT_POS.getX() + 0.5, ARENA_TELEPORT_POS.getY(),
@@ -453,8 +980,9 @@ public class GameManager {
             }
         }
 
-        // pisahin pool means & clue, masing-masing diacak sekali biar ID
-        // yang kepake antar cluster/dinding gak pernah dobel
+        List<UUID> players = new ArrayList<>(allPlayers);
+        players.removeIf(uuid -> roleAssignments.get(uuid) == Role.FORENSIC_SCIENTIST);
+
         List<String> meansPool = new ArrayList<>();
         List<String> cluePool = new ArrayList<>();
         for (String id : ModBlocks.CLUE_IDS) {
@@ -467,7 +995,7 @@ public class GameManager {
         int clueIndex = 0;
         int playerIndex = 0;
 
-        int[] clusterCounts = computeClusterCountsPerWall(players.size()); // {kiri, kanan, belakang}
+        int[] clusterCounts = computeClusterCountsPerWall(players.size());
 
         for (int wallIdx = 0; wallIdx < ARENA_WALLS.length; wallIdx++) {
             WallSpec wall = ARENA_WALLS[wallIdx];
@@ -477,6 +1005,9 @@ public class GameManager {
                 UUID ownerUuid = players.get(playerIndex++);
                 ServerPlayer owner = server.getPlayerList().getPlayer(ownerUuid);
 
+                List<ItemStack> clusterMeans = new ArrayList<>();
+                List<ItemStack> clusterClues = new ArrayList<>();
+
                 for (int offset : columns) {
                     if (meansIndex >= meansPool.size() || clueIndex >= cluePool.size()) break;
 
@@ -485,20 +1016,52 @@ public class GameManager {
 
                     BlockPos meansPos = new BlockPos(x, MEANS_Y, z);
                     BlockPos cluePos = new BlockPos(x, CLUE_Y, z);
-                    placeOnWall(level, meansPool.get(meansIndex++), meansPos, wall.facing());
-                    placeOnWall(level, cluePool.get(clueIndex++), cluePos, wall.facing());
+                    String meansId = meansPool.get(meansIndex++);
+                    String clueId = cluePool.get(clueIndex++);
 
-                    // backing dinding: merah di belakang means, biru di belakang clue
+                    placeOnWall(level, meansId, meansPos, wall.facing());
+                    placeOnWall(level, clueId, cluePos, wall.facing());
+
+                    clusterOwnerByPos.put(meansPos, ownerUuid);
+                    clusterOwnerByPos.put(cluePos, ownerUuid);
+
+                    clusterMeans.add(new ItemStack(ModBlocks.CLUE_BLOCKS.get(meansId).get()));
+                    clusterClues.add(new ItemStack(ModBlocks.CLUE_BLOCKS.get(clueId).get()));
+
                     Direction backingDir = wall.facing().getOpposite();
                     level.setBlock(meansPos.relative(backingDir), Blocks.RED_CONCRETE.defaultBlockState(), 3);
                     level.setBlock(cluePos.relative(backingDir), Blocks.BLUE_CONCRETE.defaultBlockState(), 3);
                 }
 
-                if (owner != null) {
-                    spawnOwnerHead(level, owner, wall, columns);
-                }
+                int mid = columns[columns.length / 2];
+
+                int cx = wall.alongX() ? wall.center() + mid : wall.fixedCoord();
+                int cz = wall.alongX() ? wall.fixedCoord() : wall.center() + mid;
+
+                CLUSTERS.put(
+                    new BlockPos(cx, CLUE_Y, cz),
+                    new ClusterData(
+                        ownerUuid,
+                        getPlayerName(ownerUuid),
+                        new BlockPos(cx, CLUE_Y, cz),
+                        clusterMeans,
+                        clusterClues
+                    )
+                );
+
+                spawnOwnerHead(level, ownerUuid, getPlayerName(ownerUuid), owner, wall, columns);
             }
         }
+    }
+
+    public void refreshOwnerHeadSkin(MinecraftServer server, UUID ownerUuid) {
+        if (state == State.IDLE) return;
+        HeadPlacement placement = headPlacementByOwner.get(ownerUuid);
+        if (placement == null) return;
+        ServerPlayer player = server.getPlayerList().getPlayer(ownerUuid);
+        if (player == null) return;
+
+        spawnOwnerHead(server.overworld(), ownerUuid, getPlayerName(ownerUuid), player, placement.wall(), placement.columns());
     }
 
     private void placeOnWall(ServerLevel level, String id, BlockPos pos, Direction facing) {
@@ -510,26 +1073,22 @@ public class GameManager {
         level.setBlock(pos, state, 3);
     }
 
-    /**
-     * Taro kepala (skin) player pemilik cluster di atas baris means-nya
-     * (HEAD_Y). Karena CLUSTER_WIDTH = 4 (genap), gak ada 1 block yang pas
-     * di tengah cluster -- jadi kepalanya diapungkan (pakai item display
-     * entity, BUKAN block grid) tepat di garis batas antara 2 block
-     * tengah, kaya di foto referensi. Kalau nanti CLUSTER_WIDTH diubah jadi
-     * ganjil, rumus ini otomatis jatuh pas di tengah 1 block juga.
-     */
-    private void spawnOwnerHead(ServerLevel level, ServerPlayer owner, WallSpec wall, int[] columns) {
-        // titik tengah geometris cluster (dalam koordinat dunia, relatif ke wall.center())
+    private void spawnOwnerHead(ServerLevel level, UUID ownerUuid, String ownerName, ServerPlayer ownerOnline, WallSpec wall, int[] columns) {
+        headPlacementByOwner.put(ownerUuid, new HeadPlacement(wall, columns));
+
+        List<UUID> previousEntities = headEntitiesByOwner.remove(ownerUuid);
+        if (previousEntities != null) {
+            for (UUID id : previousEntities) {
+                var old = level.getEntity(id);
+                if (old != null) old.discard();
+                spawnedHeadEntities.remove(id);
+            }
+        }
+        List<UUID> ownEntities = new ArrayList<>();
+        headEntitiesByOwner.put(ownerUuid, ownEntities);
+
         double centerOffset = columns[0] + CLUSTER_WIDTH / 2.0;
 
-        // dorong dikit dari sisi yang NEMPEL ke dinding solid (backingDir)
-        // ke arah dalam ruangan -- boundary-nya ditentuin dari backingStep
-        // (sisi cluster yang bersentuhan sama dinding solid di belakangnya),
-        // terus digeser dikit (HEAD_SURFACE_INSET) ke arah facing biar gak
-        // z-fighting. Formula lama pake offset gede (hampir 1 block) yang
-        // ngebuat kepala di kanan overshoot nembus ke sisi LUAR dinding
-        // solid (makanya nongol di luar arena) -- sekarang offsetnya kecil
-        // aja jadi selalu berhenti di dalam cell means/clue-nya sendiri.
         Direction backingDir = wall.facing().getOpposite();
         int backingStep = wall.alongX() ? backingDir.getStepZ() : backingDir.getStepX();
         int facingStep = -backingStep;
@@ -540,29 +1099,15 @@ public class GameManager {
         double headY = HEAD_Y + 0.5;
 
         ItemStack headStack = new ItemStack(Items.PLAYER_HEAD);
-        // pake GameProfile asli si player (udah bawa texture properties
-        // dari sesi login), bukan bikin profile kosong isinya cuma
-        // Id+Name -- kalo cuma Id+Name doang, client kudu resolve texture
-        // secara async dulu (kadang belum kebentuk pas dipasang -> muncul
-        // kepala Steve generic)
+        GameProfile profile = ownerOnline != null
+                ? ownerOnline.getGameProfile()
+                : new GameProfile(ownerUuid, ownerName);
         headStack.getOrCreateTag().put("SkullOwner",
-                NbtUtils.writeGameProfile(new CompoundTag(), owner.getGameProfile()));
+                NbtUtils.writeGameProfile(new CompoundTag(), profile));
 
-        // angle-nya kebalik dari sebelumnya (yaw - 180, bukan 180 - yaw).
-        // Kebetulan buat NORTH(180) & SOUTH(0) hasilnya sama aja (180°
-        // muter kemanapun arahnya tetep balik ke posisi yang sama), jadi
-        // dinding kiri & kanan keliatan "kebetulan" bener -- tapi buat
-        // WEST(90) kayak dinding belakang, arahnya kebalik 180° (ngadep
-        // EAST bukan WEST), makanya kepalanya ga ngadep ke tengah ruangan.
         float yaw = wall.facing().toYRot();
         Quaternionf leftRotation = new Quaternionf();
 
-        // Semua field Display entity (item, item_display, billboard,
-        // transformation) di-set lewat NBT + Entity#load(), BUKAN lewat
-        // setter Java langsung -- di 1.20.1 setter2 itu package-private di
-        // mapping vanilla (gak public), sedangkan format NBT di bawah ini
-        // 100% sama kayak yang dipake command "/summon item_display" (jadi
-        // stabil lintas versi & gak nyentuh kelas client-only sama sekali).
         CompoundTag entityTag = new CompoundTag();
         entityTag.put("item", headStack.save(new CompoundTag()));
         entityTag.putString("item_display", "fixed");
@@ -578,6 +1123,7 @@ public class GameManager {
         Display.ItemDisplay display = (Display.ItemDisplay) EntityType.ITEM_DISPLAY.create(level);
         if (display == null) return;
         display.load(entityTag);
+        display.addTag("deception_display");
 
         display.setNoGravity(true);
         display.setYRot(yaw);
@@ -585,6 +1131,8 @@ public class GameManager {
 
         level.addFreshEntity(display);
         spawnedHeadEntities.add(display.getUUID());
+        ownEntities.add(display.getUUID());
+        
         Display.TextDisplay text = (Display.TextDisplay) EntityType.TEXT_DISPLAY.create(level);
         if (text != null) {
             double offset = 0.08;
@@ -601,23 +1149,21 @@ public class GameManager {
             }
 
             CompoundTag tag = new CompoundTag();
-            tag.putString("text",
-            Component.Serializer.toJson(
-                Component.literal(owner.getGameProfile().getName())
-            ));
-            
+            tag.putString("text", Component.Serializer.toJson(Component.literal(ownerName)));
             tag.putString("billboard", "fixed");
-            tag.putInt("background", 0);      // transparan
+            tag.putInt("background", 0);
             tag.putInt("line_width", 200);
             tag.putByte("see_through", (byte)1);
             tag.putByte("default_background", (byte)0);
             
             text.load(tag);
+            text.addTag("deception_display");
             text.setYRot(yaw);
             text.setPos(textX, textY, textZ);
 
             level.addFreshEntity(text);
             spawnedHeadEntities.add(text.getUUID());
+            ownEntities.add(text.getUUID());
         }
     }
 
@@ -629,9 +1175,10 @@ public class GameManager {
         return list;
     }
 
-    // ---------- Tick loop, dipanggil dari server tick event ----------
+    // ---------- Tick loop ----------
 
     public void tick() {
+        globalTickCounter++;
         if (state == State.COUNTDOWN) {
             countdownTicks--;
             int secondsLeft = (int) Math.ceil(countdownTicks / 20.0);
@@ -640,20 +1187,32 @@ public class GameManager {
                 showCountdownTitle(secondsLeft);
             }
             if (countdownTicks <= 0) {
+                computeRoleAssignments();
                 teleportPlayersAndDecorateArena(serverRef);
                 state = State.SHUFFLE;
                 shuffleTicksLeft = SHUFFLE_DURATION_TICKS;
                 activeRolePool = computeActiveRolePool();
+                for (UUID uuid : registeredPlayers) {
+                    ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
+                    if (player != null) {
+                        sendTitle(
+                            player,
+                            Component.literal("Mengocok Peran").withStyle(ChatFormatting.GOLD),
+                            Component.empty(),
+                            0, SHUFFLE_DURATION_TICKS, 0
+                        );
+                    }
+                }
             }
         } else if (state == State.SHUFFLE) {
             shuffleTicksLeft--;
             spinRoleTitle();
             if (shuffleTicksLeft <= 0) {
-                assignRoles(serverRef);
-                state = State.DISCUSS;
-                discussTicksLeft = discussTimerSeconds * 20;
-                broadcast(serverRef, Component.literal("Peran sudah dibagikan! Diskusi dimulai.").withStyle(ChatFormatting.GREEN));
+                revealRoles(serverRef);
+                startNightSequence(serverRef);
             }
+        } else if (state == State.NIGHT) {
+            tickNightSequence();
         } else if (state == State.DISCUSS) {
             discussTicksLeft--;
             if (discussTicksLeft <= 0) {

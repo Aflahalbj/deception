@@ -1,6 +1,6 @@
 {
   "parent": "minecraft:item/generated",
   "textures": {
-    "layer0": "deception:item/means_anak_tangga_patah"
+    "layer0": "deception:item/means_tangga_rusak"
   }
 }

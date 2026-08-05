@@ -149,14 +149,69 @@ public class ModCommands {
                                     return 1;
                                 })))
 
+                // Di dalam register method, setelah literal("settimer") atau di mana aja
+                .then(literal("setrole")
+                        .then(argument("playername", StringArgumentType.word())
+                                .suggests(REGISTERED_PLAYERS)
+                                .then(argument("role", StringArgumentType.word())
+                                        .suggests(ROLE_NAMES)
+                                        .executes(ctx -> {
+                                            String playerName = StringArgumentType.getString(ctx, "playername");
+                                            String roleName = StringArgumentType.getString(ctx, "role");
+                                            
+                                            Role role = Role.fromString(roleName);
+                                            if (role == null) {
+                                                ctx.getSource().sendFailure(Component.literal("Role tidak dikenal: " + roleName));
+                                                return 0;
+                                            }
+                                            
+                                            boolean ok = GameManager.get().setPlayerRole(playerName, role);
+                                            if (ok) {
+                                                ctx.getSource().sendSuccess(() -> 
+                                                    Component.literal(playerName + " di-set menjadi " + role.getDisplayName())
+                                                    .withStyle(ChatFormatting.GREEN), true);
+                                            } else {
+                                                ctx.getSource().sendFailure(Component.literal("Player " + playerName + " tidak terdaftar."));
+                                            }
+                                            return 1;
+                                        }))))
+
                 .then(literal("startgame")
                         .executes(ctx -> {
-                            boolean ok = GameManager.get().startGame(ctx.getSource().getServer());
-                            if (!ok) {
-                                ctx.getSource().sendFailure(Component.literal("Gagal start (game sudah jalan / jumlah pemain harus 4-12)."));
+                            GameManager.StartResult result = GameManager.get().startGame(ctx.getSource().getServer());
+                            switch (result) {
+                                case OK:
+                                    return 1;
+                                case ALREADY_RUNNING:
+                                    ctx.getSource().sendFailure(Component.literal("Gagal start: game sedang berjalan."));
+                                    return 0;
+                                case INVALID_PLAYER_COUNT:
+                                    int count = GameManager.get().getRegisteredPlayers().size();
+                                    ctx.getSource().sendFailure(Component.literal(
+                                            "Gagal start: jumlah player harus 4-12 (sekarang " + count + ")."));
+                                    return 0;
+                                case PLAYER_OFFLINE:
+                                    List<String> offline = GameManager.get().getOfflineRegisteredPlayerNames(ctx.getSource().getServer());
+                                    ctx.getSource().sendFailure(Component.literal(
+                                            "Gagal start: ada player teregistrasi yang offline: " + String.join(", ", offline)));
+                                    return 0;
+                                default:
+                                    return 0;
+                            }
+                        }))
+
+                .then(literal("listplayer")
+                        .executes(ctx -> {
+                            List<String> lines = GameManager.get().getRegisteredPlayerStatusLines(ctx.getSource().getServer());
+                            if (lines.isEmpty()) {
+                                ctx.getSource().sendSuccess(() -> Component.literal("Belum ada player yang di-regis."), false);
                                 return 0;
                             }
-                            return 1;
+                            ctx.getSource().sendSuccess(() -> Component.literal("Player teregistrasi (" + lines.size() + "):").withStyle(ChatFormatting.AQUA), false);
+                            for (String line : lines) {
+                                ctx.getSource().sendSuccess(() -> Component.literal("- " + line), false);
+                            }
+                            return lines.size();
                         }))
 
                 .then(literal("stopgame")
