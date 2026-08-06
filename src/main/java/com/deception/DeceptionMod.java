@@ -88,60 +88,25 @@ public class DeceptionMod {
     public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
         if (event.getEntity() instanceof ServerPlayer serverPlayer) {
             GameManager.get().refreshOwnerHeadSkin(serverPlayer.getServer(), serverPlayer.getUUID());
+            GameManager.get().onPlayerRejoined(serverPlayer.getServer(), serverPlayer);
         }
     }
 
-    // Cegah drop confirm head - pake PlayerDestroyItemEvent
+    // player left di tengah game -- kalo dia lagi "buka mata" (murderer
+    // milih item / witness liat killer), kasih tau role terkait & mulai
+    // timer 90 detik buat auto-pick/auto-skip (lihat GameManager#onPlayerLeft).
     @SubscribeEvent
-    public void onPlayerDestroyItem(net.minecraftforge.event.entity.player.PlayerDestroyItemEvent event) {
-        if (event.getEntity() instanceof ServerPlayer player) {
-            ItemStack stack = event.getOriginal();
-            if (!GameManager.get().canDropItem(player, stack)) {
-                // Kalo itemnya di-destroy, kita spawn ulang
-                player.getInventory().add(stack);
-                player.sendSystemMessage(Component.literal("Kepala konfirmasi tidak bisa dibuang!").withStyle(ChatFormatting.RED));
-            }
-        }
-    }
-
-    @SubscribeEvent
-    public void onSwapHand(PlayerInteractEvent.RightClickItem event) {
-        if (event.getLevel().isClientSide()) return;
-        if (!(event.getEntity() instanceof ServerPlayer player)) return;
-        
-        if (GameManager.get().getState() == GameManager.State.NIGHT) {
-            ItemStack offhand = player.getOffhandItem();
-            if (GameManager.get().isConfirmHead(offhand)) {
-                event.setCanceled(true);
-                player.sendSystemMessage(Component.literal("Kepala konfirmasi tidak bisa dipindah!").withStyle(ChatFormatting.RED));
-            }
-        }
-    }
-
-    // Cegah inventory click - pake PlayerContainerEvent
-    @SubscribeEvent
-    public void onContainerClick(net.minecraftforge.event.entity.player.PlayerContainerEvent event) {
-        if (event.getEntity() instanceof ServerPlayer player) {
-            if (GameManager.get().getState() == GameManager.State.NIGHT) {
-                // Cek kalo ada confirm head di inventory, paksa balik ke slot 0
-                for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
-                    ItemStack stack = player.getInventory().getItem(i);
-                    if (GameManager.get().isConfirmHead(stack)) {
-                        if (i != 0) {
-                            ItemStack mainHand = player.getInventory().items.get(0);
-                            player.getInventory().items.set(0, stack);
-                            player.getInventory().items.set(i, mainHand);
-                            player.sendSystemMessage(Component.literal("Kepala konfirmasi tidak bisa dipindah!").withStyle(ChatFormatting.RED));
-                        }
-                        break;
-                    }
-                }
-            }
+    public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+        if (event.getEntity() instanceof ServerPlayer serverPlayer) {
+            GameManager.get().onPlayerLeft(serverPlayer.getServer(), serverPlayer.getUUID());
         }
     }
 
     // Murderer klik kanan block means/clue (ClueBlock) di cluster dia
     // sendiri -- pilih item asli, backing-nya berubah jadi hijau.
+    // Konfirmasi pilihan (murderer) & konfirmasi "selesai melihat" (witness)
+    // sekarang lewat /deception confirm, dipicu tombol [KONFIRMASI] di
+    // chat -- lihat GameManager#onConfirmCommand & ModCommands.
     @SubscribeEvent
     public void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
         if (event.getLevel().isClientSide()) return;
@@ -149,20 +114,6 @@ public class DeceptionMod {
         if (!(event.getLevel() instanceof ServerLevel level)) return;
 
         if (GameManager.get().onMurdererClickClue(player, level, event.getPos())) {
-            event.setCanceled(true);
-        }
-    }
-
-    // Murderer klik kanan (di udara) pake kepala konfirmasi -- kunci
-    // pilihan item yang udah dipilih lewat onRightClickBlock di atas.
-    @SubscribeEvent
-    public void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
-        if (event.getLevel().isClientSide()) return;
-        if (!(event.getEntity() instanceof ServerPlayer player)) return;
-
-        if (GameManager.get().onMurdererConfirmHead(player, event.getItemStack())) {
-            event.setCanceled(true);
-        } else if (GameManager.get().onWitnessConfirmHead(player, event.getItemStack())) {
             event.setCanceled(true);
         }
     }

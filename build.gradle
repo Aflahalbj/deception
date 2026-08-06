@@ -65,6 +65,10 @@ tasks.named('processResources', ProcessResources).configure {
     filesMatching(['META-INF/mods.toml']) { expand replaceProperties + [project: project] }
 }
 
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
+
 jar {
     manifest {
         attributes([

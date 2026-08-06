@@ -43,12 +43,19 @@ public class ModCommands {
         return SharedSuggestionProvider.suggest(options, builder);
     };
 
+    // OP (permission level 2) ATAU player yang lagi jadi Forensic Scientist di game yang berjalan
+    private static boolean isOpOrForensicScientist(CommandSourceStack src) {
+        if (src.hasPermission(2)) return true;
+        if (!(src.getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) return false;
+        return GameManager.get().getRoleAssignments().get(player.getUUID()) == Role.forensic_scientist;
+    }
+
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
 
         dispatcher.register(literal("deception")
-                .requires(src -> src.hasPermission(2))
 
                 .then(literal("regis")
+                        .requires(src -> src.hasPermission(2))
                         .then(argument("playername", StringArgumentType.word())
                                 .executes(ctx -> {
                                     String name = StringArgumentType.getString(ctx, "playername");
@@ -62,6 +69,7 @@ public class ModCommands {
                                 })))
 
                 .then(literal("regisall")
+                        .requires(src -> src.hasPermission(2))
                         .executes(ctx -> {
                             int count = GameManager.get().registerAll(ctx.getSource().getServer());
                             ctx.getSource().sendSuccess(() -> Component.literal(count + " player berhasil di-regis semua.").withStyle(ChatFormatting.GREEN), true);
@@ -69,6 +77,7 @@ public class ModCommands {
                         }))
 
                 .then(literal("unregis")
+                        .requires(src -> src.hasPermission(2))
                         .then(argument("playername", StringArgumentType.word())
                                 .suggests(REGISTERED_PLAYERS)
                                 .executes(ctx -> {
@@ -83,6 +92,7 @@ public class ModCommands {
                                 })))
 
                 .then(literal("unregisall")
+                        .requires(src -> src.hasPermission(2))
                         .executes(ctx -> {
                             int count = GameManager.get().unregisterAll();
                             ctx.getSource().sendSuccess(() -> Component.literal(count + " player berhasil di-unregis semua.").withStyle(ChatFormatting.YELLOW), true);
@@ -90,14 +100,16 @@ public class ModCommands {
                         }))
 
                 .then(literal("customrole")
+                        .requires(src -> src.hasPermission(2))
                         .then(literal("witness")
-                                .then(literal("add").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.WITNESS, true)))
-                                .then(literal("remove").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.WITNESS, false))))
+                                .then(literal("add").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.witness, true)))
+                                .then(literal("remove").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.witness, false))))
                         .then(literal("accomplice")
-                                .then(literal("add").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.ACCOMPLICE, true)))
-                                .then(literal("remove").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.ACCOMPLICE, false)))))
+                                .then(literal("add").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.accomplice, true)))
+                                .then(literal("remove").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.accomplice, false)))))
 
                 .then(literal("roleinfo")
+                        .requires(src -> src.hasPermission(2))
                         .then(argument("namarole", StringArgumentType.word())
                                 .suggests(ROLE_NAMES)
                                 .executes(ctx -> {
@@ -112,6 +124,7 @@ public class ModCommands {
                                 })))
 
                 .then(literal("debugrole")
+                        .requires(src -> src.hasPermission(2))
                         .executes(ctx -> {
                             Map<UUID, Role> roles = GameManager.get().getRoleAssignments();
                             if (roles.isEmpty()) {
@@ -126,6 +139,7 @@ public class ModCommands {
                         }))
 
                 .then(literal("setfs")
+                        .requires(src -> src.hasPermission(2))
                         .then(argument("target", StringArgumentType.word())
                                 .suggests(SETFS_OPTIONS)
                                 .executes(ctx -> {
@@ -136,6 +150,7 @@ public class ModCommands {
                                 })))
 
                 .then(literal("settimer")
+                        .requires(src -> src.hasPermission(2))
                         .then(literal("discuss")
                                 .then(argument("menit", IntegerArgumentType.integer(1, 120))
                                         .executes(ctx -> {
@@ -151,6 +166,7 @@ public class ModCommands {
 
                 // Di dalam register method, setelah literal("settimer") atau di mana aja
                 .then(literal("setrole")
+                        .requires(src -> src.hasPermission(2))
                         .then(argument("playername", StringArgumentType.word())
                                 .suggests(REGISTERED_PLAYERS)
                                 .then(argument("role", StringArgumentType.word())
@@ -177,6 +193,7 @@ public class ModCommands {
                                         }))))
 
                 .then(literal("startgame")
+                        .requires(src -> src.hasPermission(2))
                         .executes(ctx -> {
                             GameManager.StartResult result = GameManager.get().startGame(ctx.getSource().getServer());
                             switch (result) {
@@ -201,6 +218,7 @@ public class ModCommands {
                         }))
 
                 .then(literal("listplayer")
+                        .requires(src -> src.hasPermission(2))
                         .executes(ctx -> {
                             List<String> lines = GameManager.get().getRegisteredPlayerStatusLines(ctx.getSource().getServer());
                             if (lines.isEmpty()) {
@@ -215,10 +233,44 @@ public class ModCommands {
                         }))
 
                 .then(literal("stopgame")
+                        .requires(src -> src.hasPermission(2))
                         .executes(ctx -> {
                             GameManager.get().stopGame(ctx.getSource().getServer());
                             ctx.getSource().sendSuccess(() -> Component.literal("Game dihentikan.").withStyle(ChatFormatting.RED), true);
                             return 1;
+                        }))
+
+                // Khusus OP atau Forensic Scientist yang lagi main -- skip fase
+                // reveal malam ini. Kalo murderer belum sempet milih means/clue,
+                // itemnya di-random-in dulu.
+                .then(literal("skipreveal")
+                        .requires(ModCommands::isOpOrForensicScientist)
+                        .executes(ctx -> {
+                            boolean ok = GameManager.get().skipReveal();
+                            if (ok) {
+                                ctx.getSource().sendSuccess(() -> Component.literal("Reveal malam ini di-skip.").withStyle(ChatFormatting.GREEN), true);
+                                return 1;
+                            } else {
+                                ctx.getSource().sendFailure(Component.literal("Gagal skip: bukan lagi fase night, atau gagal random-in item murderer."));
+                                return 0;
+                            }
+                        }))
+                        // Di dalam register method, setelah literal("skipreveal") atau di bagian manapun
+                .then(literal("confirm")
+                        .executes(ctx -> {
+                            if (!(ctx.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) {
+                                ctx.getSource().sendFailure(Component.literal("Command ini hanya bisa dijalankan oleh player."));
+                                return 0;
+                            }
+                                    
+                            boolean ok = GameManager.get().onConfirmCommand(player);
+                            if (ok) {
+                                // Success message sudah dikirim dari GameManager
+                                return 1;
+                            } else {
+                                ctx.getSource().sendFailure(Component.literal("Tidak ada yang perlu dikonfirmasi saat ini."));
+                                return 0;
+                            }
                         }))
                 );
     }

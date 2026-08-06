@@ -59,20 +59,20 @@ public class RoleComposition {
     public Map<Role, Integer> resolve() {
         Map<Role, Integer> result = new HashMap<>();
         int used = 2; // FS + Murderer
-        result.put(Role.FORENSIC_SCIENTIST, 1);
-        result.put(Role.MURDERER, 1);
+        result.put(Role.forensic_scientist, 1);
+        result.put(Role.murderer, 1);
 
         if (accompliceEnabled) {
-            result.put(Role.ACCOMPLICE, 1);
+            result.put(Role.accomplice, 1);
             used += 1;
         }
         if (witnessEnabled) {
-            result.put(Role.WITNESS, 1);
+            result.put(Role.witness, 1);
             used += 1;
         }
 
         int investigators = Math.max(0, playerCount - used);
-        result.put(Role.INVESTIGATOR, investigators);
+        result.put(Role.investigator, investigators);
         return result;
     }
 }

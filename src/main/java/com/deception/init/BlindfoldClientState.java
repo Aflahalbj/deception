@@ -31,6 +31,9 @@ public class BlindfoldClientState {
     private static boolean hasState = false;
     private static boolean blindfolded = false;
     private static boolean forceClosed = false;
+    // dipake pas rejoin -- langsung "nutup penuh" tanpa animasi (beda sama
+    // forceClosed di atas, yang malah maksa BUKA tanpa animasi)
+    private static boolean snapShut = false;
 
     @SubscribeEvent
     public static void onClientTick(TickEvent.ClientTickEvent event) {
@@ -45,11 +48,23 @@ public class BlindfoldClientState {
         hasState = true;
         blindfolded = isClosing;
         forceClosed = false;
+        snapShut = false;
     }
 
     public static void forceClose() {
         forceClosed = true;
+        snapShut = false;
         blindfolded = false;
+        hasState = true;
+    }
+
+    // Dipanggil pas player rejoin di tengah night dan harusnya masih
+    // tutup mata -- client baru gak punya state animasi apa-apa, jadi
+    // langsung "snap" ke kondisi tertutup penuh tanpa ngulang animasi.
+    public static void snapShut() {
+        snapShut = true;
+        forceClosed = false;
+        blindfolded = true;
         hasState = true;
     }
 
@@ -58,6 +73,9 @@ public class BlindfoldClientState {
     }
 
     public static float getProgress(float partialTick) {
+        if (snapShut) {
+            return 1f;
+        }
         if (forceClosed) {
             return 0f;
         }

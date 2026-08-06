@@ -1,8 +1,13 @@
 package com.deception.network;
 
+import java.util.UUID;
+
 import com.deception.DeceptionMod;
+import com.deception.game.GameManager;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.PacketDistributor;
@@ -37,6 +42,10 @@ public class ModNetworking {
                 BlindfoldForceClosePacket::encode,
                 BlindfoldForceClosePacket::decode,
                 BlindfoldForceClosePacket::handle);
+        CHANNEL.registerMessage(packetId++, BlindfoldSnapShutPacket.class,
+                BlindfoldSnapShutPacket::encode,
+                BlindfoldSnapShutPacket::decode,
+                BlindfoldSnapShutPacket::handle);
     }
 
     public static void sendBlindfoldState(ServerPlayer player, boolean closing) {
@@ -47,11 +56,26 @@ public class ModNetworking {
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new BlindfoldForceClosePacket());
     }
 
+    public static void sendSnapShutBlindfold(ServerPlayer player) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new BlindfoldSnapShutPacket());
+    }
+
     public static void broadcastNightTitle(Component title, Component subtitle, int fadeIn, int stay, int fadeOut) {
         CHANNEL.send(PacketDistributor.ALL.noArg(), new NightTitlePacket(title, subtitle, fadeIn, stay, fadeOut));
     }
 
-    public static void broadcastNightActionBar(Component text) {
-        CHANNEL.send(PacketDistributor.ALL.noArg(), new NightActionBarPacket(text));
+    // Perbaiki method broadcastNightActionBar agar mengirim ke semua player yang online
+    public static void broadcastNightActionBar(Component message) {
+        // Gunakan broadcast ke semua player via packet
+        CHANNEL.send(PacketDistributor.ALL.noArg(), new NightActionBarPacket(message));
+    }
+
+    // Kirim actionbar custom (persisten, non vanilla) ke SATU player aja --
+    // dipake pas sinkronisasi rejoin (syncActionBar), karena actionbar yang
+    // keliatan di layar itu overlay custom NightTitleClientState, BUKAN
+    // ClientboundSetActionBarTextPacket vanilla. Ngirim lewat vanilla gak
+    // bakal nge-update overlay custom-nya, makanya sebelumnya keliatan stale.
+    public static void sendNightActionBarTo(ServerPlayer player, Component message) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new NightActionBarPacket(message));
     }
 }
