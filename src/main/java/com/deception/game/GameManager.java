@@ -747,6 +747,8 @@ public class GameManager {
             com.deception.network.ModNetworking.broadcastNightActionBar(
                     Component.literal("Menunggu murderer memilih item").withStyle(ChatFormatting.RED));
             murdererWindowOpen = true;
+
+            checkMurdererWakeUpOffline();
         }
 
         if (nightTicksElapsed == murdererAutoPickAt && murdererAutoPickAt != Integer.MAX_VALUE) {
@@ -1173,6 +1175,8 @@ public class GameManager {
         // Baru boleh /deception confirm abis liat killer nyala >=3 detik;
         // begitu tick ini kena, prompt "[KONFIRMASI]" dikirim ke chat witness.
         witnessConfirmReadyAt = nightTicksElapsed + NIGHT_WITNESS_HOLD;
+
+        checkWitnessWakeUpOffline();
     }
 
     // Witness ketutup lagi matanya abis konfirmasi (baik klik manual
@@ -1447,12 +1451,14 @@ public class GameManager {
 
         if (role == Role.murderer) {
             if (!murdererConfirmed) {
-                // Berlaku baik dia left SEBELUM jendela milihnya kebuka
-                // (masih sama-sama tutup mata) MAUPUN pas lagi kebuka --
-                // begitu murderer keluar server & belum confirm, timer 90
-                // detik auto-pick langsung jalan, gak nunggu jendelanya
-                // kebuka dulu.
-                if (murdererAutoPickAt == Integer.MAX_VALUE) {
+                // Cuma react di sini kalo jendela milihnya UDAH kebuka.
+                // Kalo dia left pas masih sama-sama tutup mata (sebelum
+                // giliran dia), gak usah diapa-apain sekarang -- pas
+                // "murderer buka mata" nanti (nightKillersWakeAt di
+                // tickNightSequence), ada checkMurdererWakeUpOffline() yang
+                // ngecek ulang status online murderer/accomplice & bakal
+                // langsung mulai timer kalo ternyata dia emang udah gak ada.
+                if (murdererWindowOpen && murdererAutoPickAt == Integer.MAX_VALUE) {
                     murdererAutoPickAt = nightTicksElapsed + LEAVE_TIMEOUT_TICKS;
                     murdererAutoPickTicksLeft = LEAVE_TIMEOUT_TICKS;
                     leftMurdererUuid = uuid;
@@ -1470,11 +1476,19 @@ public class GameManager {
                             .withStyle(ChatFormatting.RED);
                     notifyRole(Role.accomplice, accMsg);
 
+                    // Witness gak boleh tau spesifik siapa/role apa yang
+                    // offline -- itu bocorin identitas orang jahat. Cukup
+                    // dikasih tau generik.
+                    notifyRole(Role.witness, Component.literal("Orang jahat keluar server. Item bakal dipilih otomatis dalam 90 detik kalo gak balik.")
+                            .withStyle(ChatFormatting.RED));
+
                     updateAutoPickCountdown();
                 }
             } else {
                 // Udah confirm (misal lagi fase witness liat / abis itu) --
-                // gak ada lagi yang perlu di-auto-pick, tetep kasih tau aja.
+                // gak ada lagi yang perlu di-auto-pick, tetep kasih tau aja
+                // ke Forensic Scientist. Witness sengaja gak dikasih tau
+                // spesifik role di sini.
                 Component msg = Component.literal(name + " (Murderer) keluar server.").withStyle(ChatFormatting.RED);
                 notifyRole(Role.forensic_scientist, msg);
             }
@@ -1484,6 +1498,7 @@ public class GameManager {
             // Accomplice gak milih apa-apa sendiri, jadi gak ada timer --
             // kapanpun dia left (sebelum atau sesudah murderer confirm),
             // selalu cuma notifikasi ke Forensic Scientist & Murderer.
+            // Witness gak dikasih tau -- lagi-lagi biar gak bocorin identitas.
             Component msg = Component.literal(name + " (Accomplice) keluar server.").withStyle(ChatFormatting.RED);
             notifyRole(Role.forensic_scientist, msg);
             notifyRole(Role.murderer, msg);
@@ -1491,9 +1506,10 @@ public class GameManager {
 
         if (role == Role.witness) {
             if (!witnessConfirmed) {
-                // Sama kayak murderer -- berlaku baik sebelum jendela liatnya
-                // kebuka maupun pas lagi kebuka.
-                if (witnessAutoSkipAt == Integer.MAX_VALUE) {
+                // Sama kayak murderer -- cuma react kalo jendela liatnya
+                // UDAH kebuka. Leave sebelum giliran dia ketangkep sama
+                // checkWitnessWakeUpOffline() pas "witness buka mata".
+                if (witnessWindowOpen && witnessAutoSkipAt == Integer.MAX_VALUE) {
                     witnessAutoSkipAt = nightTicksElapsed + LEAVE_TIMEOUT_TICKS;
                     witnessAutoSkipTicksLeft = LEAVE_TIMEOUT_TICKS;
                     leftWitnessUuid = uuid;
@@ -1944,6 +1960,127 @@ public class GameManager {
             if (e.getValue() != role) continue;
             ServerPlayer p = serverRef.getPlayerList().getPlayer(e.getKey());
             if (p != null) p.sendSystemMessage(msg);
+        }
+    }
+
+    private UUID findRoleUuid(Role role) {
+        for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
+            if (e.getValue() == role) return e.getKey();
+        }
+        return null;
+    }
+
+    /**
+     * Dipanggil pas "murderer buka mata" (nightKillersWakeAt). Kalo
+     * murderer/accomplice ternyata udah offline dari sebelum night ini
+     * mulai (SHUFFLE/REVEAL_DELAY/awal NIGHT pas masih tutup mata) --
+     * onPlayerLeft gak sempet nangkep karena jendelanya belum kebuka --
+     * langsung mulai timer auto-pick (kalo yang offline murderer) &
+     * notify, TERLEPAS kapan dia sebenernya left.
+     */
+    private void checkMurdererWakeUpOffline() {
+        if (murdererConfirmed) return;
+
+        UUID murdererUuid = findRoleUuid(Role.murderer);
+        UUID accompliceUuid = findRoleUuid(Role.accomplice);
+
+        boolean murdererOffline = murdererUuid != null
+                && serverRef.getPlayerList().getPlayer(murdererUuid) == null;
+        boolean accompliceOffline = accompliceUuid != null
+                && serverRef.getPlayerList().getPlayer(accompliceUuid) == null;
+
+        if (!murdererOffline && !accompliceOffline) return;
+
+        if (murdererOffline && murdererAutoPickAt == Integer.MAX_VALUE) {
+            String murdererName = getPlayerName(murdererUuid);
+            leftMurdererUuid = murdererUuid;
+            leftMurdererName = murdererName;
+            hasMurdererLeft = true;
+
+            murdererAutoPickAt = nightTicksElapsed + LEAVE_TIMEOUT_TICKS;
+            murdererAutoPickTicksLeft = LEAVE_TIMEOUT_TICKS;
+
+            Component fsMsg = Component.literal(murdererName + " (Murderer) sudah offline. Auto-pick dalam ")
+                    .withStyle(ChatFormatting.RED)
+                    .append(Component.literal("90 detik").withStyle(ChatFormatting.YELLOW))
+                    .append(Component.literal(".").withStyle(ChatFormatting.RED))
+                    .append(skipRevealPrompt());
+            notifyRole(Role.forensic_scientist, fsMsg);
+
+            if (!accompliceOffline) {
+                notifyRole(Role.accomplice, Component.literal(murdererName + " (Murderer) sudah offline. Item bakal dipilih otomatis dalam 90 detik kalo gak balik.")
+                        .withStyle(ChatFormatting.RED));
+            }
+
+            updateAutoPickCountdown();
+        } else if (accompliceOffline) {
+            // Cuma accomplice yang offline, murderer masih ada -- gaada
+            // timer yang perlu dimulai, notify FS & murderer aja.
+            String accompliceName = getPlayerName(accompliceUuid);
+            Component msg = Component.literal(accompliceName + " (Accomplice) sudah offline.").withStyle(ChatFormatting.RED);
+            notifyRole(Role.forensic_scientist, msg);
+            notifyRole(Role.murderer, msg);
+        }
+
+        // Witness masih tutup mata di fase ini (baru "bangun" belakangan,
+        // giliran dia abis murderer selesai) -- jadi jangan notify dia di
+        // sini. Kalo murderer/accomplice masih offline pas witness beneran
+        // bangun nanti, checkWitnessWakeUpOffline() yang bakal ngasih tau
+        // (generik, gak nyebut role spesifik).
+    }
+
+    /**
+     * Dipanggil pas "witness buka mata" (openWitnessWindow). Kalo witness
+     * udah offline dari sebelum giliran dia, langsung mulai timer
+     * auto-skip. Sekaligus ngecek murderer/accomplice (buat info ke FS
+     * doang, gak ada dampak logic karena giliran mereka udah lewat).
+     */
+    private void checkWitnessWakeUpOffline() {
+        if (witnessConfirmed || nightWitnessUuid == null) return;
+
+        boolean witnessOffline = serverRef.getPlayerList().getPlayer(nightWitnessUuid) == null;
+
+        if (witnessOffline && witnessAutoSkipAt == Integer.MAX_VALUE) {
+            String witnessName = getPlayerName(nightWitnessUuid);
+            leftWitnessUuid = nightWitnessUuid;
+            leftWitnessName = witnessName;
+            hasWitnessLeft = true;
+
+            witnessAutoSkipAt = nightTicksElapsed + LEAVE_TIMEOUT_TICKS;
+            witnessAutoSkipTicksLeft = LEAVE_TIMEOUT_TICKS;
+
+            Component fsMsg = Component.literal(witnessName + " (Witness) sudah offline. Auto-skip dalam ")
+                    .withStyle(ChatFormatting.AQUA)
+                    .append(Component.literal("90 detik").withStyle(ChatFormatting.YELLOW))
+                    .append(Component.literal(".").withStyle(ChatFormatting.AQUA))
+                    .append(skipRevealPrompt());
+            notifyRole(Role.forensic_scientist, fsMsg);
+
+            updateWitnessSkipCountdown();
+        }
+
+        UUID murdererUuid = findRoleUuid(Role.murderer);
+        UUID accompliceUuid = findRoleUuid(Role.accomplice);
+        boolean murdererStillOffline = murdererUuid != null
+                && serverRef.getPlayerList().getPlayer(murdererUuid) == null;
+        boolean accompliceStillOffline = accompliceUuid != null
+                && serverRef.getPlayerList().getPlayer(accompliceUuid) == null;
+
+        if (murdererStillOffline) {
+            notifyRole(Role.forensic_scientist, Component.literal(getPlayerName(murdererUuid) + " (Murderer) sudah offline.")
+                    .withStyle(ChatFormatting.RED));
+        }
+        if (accompliceStillOffline) {
+            notifyRole(Role.forensic_scientist, Component.literal(getPlayerName(accompliceUuid) + " (Accomplice) sudah offline.")
+                    .withStyle(ChatFormatting.RED));
+        }
+
+        // Witness baru "bangun" sekarang, jadi baru di titik inilah dia
+        // boleh dikasih tau kalo salah satu orang jahat gak ada -- tetep
+        // generik, gak nyebut role spesifik (Murderer/Accomplice) biar gak
+        // bocorin identitas.
+        if (murdererStillOffline || accompliceStillOffline) {
+            notifyRole(Role.witness, Component.literal("Orang jahat keluar server.").withStyle(ChatFormatting.RED));
         }
     }
 
