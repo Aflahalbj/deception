@@ -2,6 +2,7 @@ package com.deception.init;
 
 import com.deception.DeceptionMod;
 import com.deception.block.ClueBlock;
+import com.deception.block.InvestigationPaperBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.material.MapColor;
@@ -330,4 +331,16 @@ public class ModBlocks {
             CLUE_BLOCKS.put(id, block);
         }
     }
+
+    // Block dekoratif terpisah dari sistem clue/means -- model 3D utuh
+    // (kertas + pin) pake Forge OBJ loader, cuma bisa nempel di tembok.
+    // Liat InvestigationPaperBlock & models/block/investigation_paper.json.
+    public static final RegistryObject<Block> INVESTIGATION_PAPER = BLOCKS.register("investigation_paper",
+            () -> new InvestigationPaperBlock(Block.Properties.of()
+                    .mapColor(MapColor.NONE)
+                    .noOcclusion()
+                    .noCollission()
+                    .sound(SoundType.WOOL)
+                    .strength(0.1F)
+                    .instabreak()));
 }

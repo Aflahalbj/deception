@@ -21,6 +21,7 @@ public class ModClientSetup {
             for (var block : ModBlocks.CLUE_BLOCKS.values()) {
                 ItemBlockRenderTypes.setRenderLayer(block.get(), RenderType.cutout());
             }
+            ItemBlockRenderTypes.setRenderLayer(ModBlocks.INVESTIGATION_PAPER.get(), RenderType.cutout());
 
             MinecraftForge.EVENT_BUS.register(ClusterHoverOverlay.class);
             MinecraftForge.EVENT_BUS.register(BlindfoldClientState.class);
@@ -35,5 +36,6 @@ public class ModClientSetup {
     public static void registerOverlays(RegisterGuiOverlaysEvent event) {
         ClueHoverOverlay.register(event);
         ClusterHoverOverlay.register(event);
+        InvestigationPaperHoverOverlay.register(event);
     }
 }

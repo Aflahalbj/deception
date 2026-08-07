@@ -5,6 +5,7 @@ import java.util.UUID;
 import com.deception.command.ModCommands;
 import com.deception.game.GameManager;
 import com.deception.init.ClueHoverOverlay;
+import com.deception.init.ModBlockEntities;
 import com.deception.init.ModBlocks;
 import com.deception.init.ModClientSetup;
 import com.deception.init.ModItems;
@@ -41,6 +42,7 @@ public class DeceptionMod {
         com.deception.network.ModNetworking.register();
 
         ModBlocks.BLOCKS.register(modEventBus);
+        ModBlockEntities.BLOCK_ENTITIES.register(modEventBus);
         ModItems.ITEMS.register(modEventBus);
         ModItems.CREATIVE_TABS.register(modEventBus);
 

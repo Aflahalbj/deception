@@ -3,6 +3,7 @@ package com.deception.game;
 import com.deception.command.RoleDescriptions;
 import com.deception.init.ClusterData;
 import com.deception.init.ModBlocks;
+import com.deception.init.ModItems;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -29,6 +30,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.FloatTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
+import net.minecraft.nbt.StringTag;
 import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -308,6 +310,13 @@ public class GameManager {
             return StartResult.PLAYER_OFFLINE;
         }
         this.serverRef = server;
+
+        // Bersihin arena dulu (blok means/clue, head entity, cluster data
+        // sisa dari game sebelumnya -- jaga-jaga kalo restore pas
+        // stopGame/abortGame kemarin kepotong/gak sempurna) SEBELUM mulai
+        // nyusun game baru.
+        restoreArena(server);
+
         this.state = State.COUNTDOWN;
         this.countdownTicks = COUNTDOWN_SECONDS * 20;
         this.lastCountdownSecondShown = -1;
@@ -320,6 +329,16 @@ public class GameManager {
             if (player != null) {
                 player.setGameMode(GameType.ADVENTURE);
                 player.getInventory().clearContent();
+                player.removeAllEffects();
+
+                // Sinkronin ulang noteblock (blindfold) & overlay blindfold
+                // client -- jaga-jaga ada sisa dari sesi sebelumnya yang
+                // belum sempet ke-clear pas player ini join.
+                if (player.getItemBySlot(EquipmentSlot.HEAD).getItem() == Items.NOTE_BLOCK) {
+                    player.setItemSlot(EquipmentSlot.HEAD, ItemStack.EMPTY);
+                }
+                com.deception.network.ModNetworking.sendForceCloseBlindfold(player);
+
                 AttributeInstance blockReach = player.getAttribute(ForgeMod.BLOCK_REACH.get());
                 if (blockReach != null) {
                     blockReach.setBaseValue(30.0D);
@@ -408,15 +427,14 @@ public class GameManager {
                 if (player != null) {
                     player.setGameMode(GameType.SURVIVAL);
 
-                    // Hapus noteblock dari kepala
-                    if (player.getItemBySlot(EquipmentSlot.HEAD).getItem() == Items.NOTE_BLOCK) {
-                        player.setItemSlot(EquipmentSlot.HEAD, ItemStack.EMPTY);
-                    }
+                    // Bersihin inventory (termasuk armor/noteblock di slot
+                    // kepala) & semua effect (glowing dll) yang mungkin
+                    // masih nempel pas game dihentikan.
+                    player.getInventory().clearContent();
+                    player.removeAllEffects();
 
                     // FORCE CLOSE - langsung ilang tanpa animasi
                     com.deception.network.ModNetworking.sendForceCloseBlindfold(player);
-
-                    removeGlow(player);
 
                     // Clear semua title dan actionbar
                     player.connection.send(new ClientboundSetTitlesAnimationPacket(0, 0, 0));
@@ -460,8 +478,27 @@ public class GameManager {
         headEntitiesByOwner.clear();
         CLUSTERS.clear();
         clusterOwnerByPos.clear();
+        pendingForensicScientistUuid = null;
+        pendingForensicPaperCategories = null;
+        forensicPapersGivenThisRound = false;
 
         resetArenaBlocks(level);
+        resetForensicBoard(level);
+    }
+
+    // Board tempat Forensic Scientist naro investigation paper yang udah
+    // dipilih (di atas black_wool) -- bukan bagian dari ARENA_WALLS, jadi
+    // dibersihin manual di sini pas stopgame/restoreArena.
+    private static final BlockPos FORENSIC_BOARD_MIN = new BlockPos(107, -58, 175);
+    private static final BlockPos FORENSIC_BOARD_MAX = new BlockPos(108, -56, 182);
+
+    private void resetForensicBoard(ServerLevel level) {
+        BlockState air = Blocks.AIR.defaultBlockState();
+        for (BlockPos pos : BlockPos.betweenClosed(FORENSIC_BOARD_MIN, FORENSIC_BOARD_MAX)) {
+            if (level.getBlockState(pos).is(ModBlocks.INVESTIGATION_PAPER.get())) {
+                level.setBlock(pos.immutable(), air, 3);
+            }
+        }
     }
 
     private void resetArenaBlocks(ServerLevel level) {
@@ -506,27 +543,7 @@ public class GameManager {
 
     public void forceCleanupOnStartup(MinecraftServer server) {
         this.state = State.IDLE;
-        ServerLevel level = server.overworld();
-
-        resetArenaBlocks(level);
-
-        for (UUID headId : spawnedHeadEntities) {
-            var entity = level.getEntity(headId);
-            if (entity != null) {
-                entity.discard();
-            }
-        }
-        for (Entity entity : level.getEntities().getAll()) {
-            if (entity.getTags().contains("deception_display")) {
-                entity.discard();
-            }
-        }
-
-        spawnedHeadEntities.clear();
-        headPlacementByOwner.clear();
-        headEntitiesByOwner.clear();
-        CLUSTERS.clear();
-        clusterOwnerByPos.clear();
+        restoreArena(server);
     }
 
     private List<Role> computeActiveRolePool() {
@@ -802,6 +819,20 @@ public class GameManager {
             com.deception.network.ModNetworking.broadcastNightTitle(
                     Component.literal("Semua orang buka mata").withStyle(ChatFormatting.GOLD),
                     Component.empty(), 10, NIGHT_WAKE_HOLD, 10);
+
+            UUID fsUuid = null;
+            for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
+                if (e.getValue() == Role.forensic_scientist) { fsUuid = e.getKey(); break; }
+            }
+            giveForensicScientistPapers(serverRef, fsUuid);
+            broadcastForensicWaitActionBar();
+        }
+
+        // Titik-titiknya jalan sepanjang jeda "semua orang buka mata"
+        // (nightWakeAllAt fired, tapi belum reset ke MAX_VALUE) sampe diskusi mulai.
+        if (nightDoneAt != Integer.MAX_VALUE && nightTicksElapsed > nightWakeAllAt
+                && globalTickCounter % 10 == 0) {
+            broadcastForensicWaitActionBar();
         }
 
         if (nightTicksElapsed >= nightDoneAt && nightDoneAt != Integer.MAX_VALUE) {
@@ -825,7 +856,7 @@ public class GameManager {
 
     private ItemStack createBlindfoldItem() {
         ItemStack helmet = new ItemStack(Items.NOTE_BLOCK);
-        helmet.setHoverName(Component.literal("Mata Tertutup").withStyle(ChatFormatting.DARK_GRAY));
+        helmet.setHoverName(Component.literal("Penutup mata").withStyle(ChatFormatting.RED));
         return helmet;
     }
 
@@ -1170,7 +1201,7 @@ public class GameManager {
             if (p != null) applyGlow(p);
         }
         com.deception.network.ModNetworking.broadcastNightActionBar(
-                Component.literal("Menunggu witness melihat...").withStyle(ChatFormatting.AQUA));
+                Component.literal("Menunggu witness melihat").withStyle(ChatFormatting.AQUA));
         witnessWindowOpen = true;
         // Baru boleh /deception confirm abis liat killer nyala >=3 detik;
         // begitu tick ini kena, prompt "[KONFIRMASI]" dikirim ke chat witness.
@@ -1300,6 +1331,17 @@ public class GameManager {
                 player.connection.send(new ClientboundSetActionBarTextPacket(message));
             }
         }
+    }
+
+    // Actionbar bawaan (bukan overlay custom) "Menunggu forensic scientist
+    // memberi clue..." -- mulai pas "Semua orang buka mata", terus nyala
+    // terus (di-resend tiap 10 tick biar titik-titiknya keliatan jalan &
+    // gak keburu fade vanilla) sepanjang fase diskusi.
+    private void broadcastForensicWaitActionBar() {
+        int dotCount = (int) ((globalTickCounter / 10) % 4);
+        Component actionBar = Component.literal("Menunggu forensic scientist memberi clue" + ".".repeat(dotCount))
+                .withStyle(ChatFormatting.YELLOW);
+        broadcastActionBarToAll(actionBar);
     }
 
     private void showCountdownTitle(int secondsLeft) {
@@ -1476,21 +1518,27 @@ public class GameManager {
                             .withStyle(ChatFormatting.RED);
                     notifyRole(Role.accomplice, accMsg);
 
-                    // Witness gak boleh tau spesifik siapa/role apa yang
-                    // offline -- itu bocorin identitas orang jahat. Cukup
-                    // dikasih tau generik.
-                    notifyRole(Role.witness, Component.literal("Orang jahat keluar server. Item bakal dipilih otomatis dalam 90 detik kalo gak balik.")
-                            .withStyle(ChatFormatting.RED));
-
+                    // Witness masih tutup mata & belum masuk giliran dia di
+                    // titik ini (jendela witness baru kebuka SETELAH
+                    // murderer confirm) -- jadi JANGAN notify witness di
+                    // sini. Kalo murderer/accomplice masih offline pas
+                    // giliran witness beneran mulai nanti, dia bakal dikasih
+                    // tau lewat notifyWitnessKillerLeft() (dipanggil dari
+                    // checkWitnessWakeUpOffline / openWitnessWindow).
                     updateAutoPickCountdown();
                 }
             } else {
                 // Udah confirm (misal lagi fase witness liat / abis itu) --
-                // gak ada lagi yang perlu di-auto-pick, tetep kasih tau aja
-                // ke Forensic Scientist. Witness sengaja gak dikasih tau
-                // spesifik role di sini.
+                // gak ada lagi yang perlu di-auto-pick, tetep kasih tau ke
+                // Forensic Scientist. Kalo giliran witness lagi berlangsung
+                // (witnessWindowOpen), witness juga dikasih tau -- ini yang
+                // beneran dia alami real-time (murderer ilang pas dia lagi
+                // "buka mata" liat killer).
                 Component msg = Component.literal(name + " (Murderer) keluar server.").withStyle(ChatFormatting.RED);
                 notifyRole(Role.forensic_scientist, msg);
+                if (witnessWindowOpen && !witnessConfirmed) {
+                    notifyWitnessKillerLeft(name);
+                }
             }
         }
 
@@ -1498,10 +1546,15 @@ public class GameManager {
             // Accomplice gak milih apa-apa sendiri, jadi gak ada timer --
             // kapanpun dia left (sebelum atau sesudah murderer confirm),
             // selalu cuma notifikasi ke Forensic Scientist & Murderer.
-            // Witness gak dikasih tau -- lagi-lagi biar gak bocorin identitas.
+            // Witness cuma dikasih tau kalo giliran dia (witnessWindowOpen)
+            // lagi berlangsung pas ini kejadian -- sebelum itu (termasuk
+            // pas murderer masih milih) witness gak boleh tau apa-apa dulu.
             Component msg = Component.literal(name + " (Accomplice) keluar server.").withStyle(ChatFormatting.RED);
             notifyRole(Role.forensic_scientist, msg);
             notifyRole(Role.murderer, msg);
+            if (witnessWindowOpen && !witnessConfirmed) {
+                notifyWitnessKillerLeft(name);
+            }
         }
 
         if (role == Role.witness) {
@@ -1530,6 +1583,17 @@ public class GameManager {
                 notifyRole(Role.forensic_scientist, msg);
             }
         }
+    }
+
+    // Notify witness kalo murderer/accomplice ilang (offline) pas giliran
+    // witness lagi berlangsung (witnessWindowOpen) -- baik karena dia baru
+    // left SEKARANG (dipanggil dari onPlayerLeft) maupun karena dia udah
+    // offline DARI SEBELUM jendela witness kebuka (dipanggil dari
+    // checkWitnessWakeUpOffline pas openWitnessWindow). Sengaja tetep gak
+    // nyebut role spesifik (Murderer/Accomplice), cuma nama pemainnya --
+    // biar gak bocorin identitas orang jahat ke witness.
+    private void notifyWitnessKillerLeft(String name) {
+        notifyRole(Role.witness, Component.literal(name + " orang jahat telah keluar").withStyle(ChatFormatting.RED));
     }
 
     // Nempel di pesan "X keluar server" yang dikirim ke Forensic
@@ -1588,6 +1652,14 @@ public class GameManager {
         // KIRIM ULANG SKIP BUTTON ke Forensic Scientist jika masih ada player yang left
         if (role == Role.forensic_scientist) {
             resendSkipButtonToForensicScientist(player);
+
+            // FS ini yang tadi offline pas giveForensicScientistPapers manggil --
+            // kasih sekarang, kategorinya sama kayak yang udah diacak sebelumnya.
+            if (uuid.equals(pendingForensicScientistUuid) && pendingForensicPaperCategories != null) {
+                deliverForensicPapers(player, pendingForensicPaperCategories);
+                pendingForensicScientistUuid = null;
+                pendingForensicPaperCategories = null;
+            }
         }
 
         // Kasih tau info yang kelewat pas dia offline
@@ -1733,69 +1805,81 @@ public class GameManager {
 
     // Method baru untuk sinkronisasi actionbar
     // Di dalam syncActionBar, tambahkan pengecekan countdown:
+    // Actionbar CUSTOM (overlay animasi titik-titik client-side, lihat
+    // NightTitleClientState) cuma dipake buat 2 pesan ini: "Menunggu
+    // murderer memilih item" & "Menunggu witness melihat". Semua pesan
+    // actionbar lain (countdown auto-pick/skip, diskusi, game start, dst)
+    // pake actionbar BAWAAN Minecraft (ClientboundSetActionBarTextPacket
+    // langsung).
     private void syncActionBar(ServerPlayer player) {
+        // Clear overlay custom-nya duluan di awal, apapun state-nya sekarang.
+        // Overlay custom itu static state di CLIENT, gak otomatis ke-reset
+        // pas reconnect ke server yang sama (kalo player gak restart game-nya)
+        // -- jadi kalo dia disconnect pas lagi "Menunggu witness melihat" terus
+        // rejoin pas udah DISCUSS, tanpa clear ini teks lama itu nyangkut
+        // terus di layar dia walau gak pernah ada yang ngirim clear ke dia.
+        com.deception.network.ModNetworking.sendNightActionBarTo(player, Component.empty());
+
         if (state == State.NIGHT) {
-            Component actionBar = Component.empty();
-            
             // Prioritaskan countdown jika ada
             if (murdererAutoPickAt != Integer.MAX_VALUE && leftMurdererUuid != null && !murdererConfirmed) {
                 int secondsLeft = (int) Math.ceil(murdererAutoPickTicksLeft / 20.0);
                 if (secondsLeft > 0) {
                     Role role = roleAssignments.get(player.getUUID());
                     if (role == Role.forensic_scientist || role == Role.accomplice) {
-                        actionBar = Component.literal("⏱ Auto-pick Murderer dalam ")
+                        Component actionBar = Component.literal("⏱ Auto-pick Murderer dalam ")
                                 .withStyle(ChatFormatting.RED)
                                 .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW));
-                        com.deception.network.ModNetworking.sendNightActionBarTo(player, actionBar);
+                        player.connection.send(new ClientboundSetActionBarTextPacket(actionBar));
                         return;
                     }
                 }
             }
-            
+
             if (witnessAutoSkipAt != Integer.MAX_VALUE && leftWitnessUuid != null && !witnessConfirmed) {
                 int secondsLeft = (int) Math.ceil(witnessAutoSkipTicksLeft / 20.0);
                 if (secondsLeft > 0) {
                     Role role = roleAssignments.get(player.getUUID());
                     if (role == Role.forensic_scientist) {
-                        actionBar = Component.literal("⏱ Auto-skip Witness dalam ")
+                        Component actionBar = Component.literal("⏱ Auto-skip Witness dalam ")
                                 .withStyle(ChatFormatting.AQUA)
                                 .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW));
-                        com.deception.network.ModNetworking.sendNightActionBarTo(player, actionBar);
+                        player.connection.send(new ClientboundSetActionBarTextPacket(actionBar));
                         return;
                     }
                 }
             }
-            
+
             // Jika tidak ada countdown, tampilkan actionbar normal
             if (murdererWindowOpen && !murdererConfirmed) {
-                actionBar = Component.literal("Menunggu murderer memilih item").withStyle(ChatFormatting.RED);
+                Component actionBar = Component.literal("Menunggu murderer memilih item").withStyle(ChatFormatting.RED);
+                com.deception.network.ModNetworking.sendNightActionBarTo(player, actionBar);
             } else if (witnessWindowOpen && !witnessConfirmed && nightWitnessUuid != null) {
                 if (player.getUUID().equals(nightWitnessUuid)) {
-                    actionBar = Component.literal("Kamu adalah Witness - Lihat siapa yang bersinar!").withStyle(ChatFormatting.AQUA);
+                    Component actionBar = Component.literal("Kamu adalah Witness - Lihat siapa yang bersinar!").withStyle(ChatFormatting.AQUA);
+                    player.connection.send(new ClientboundSetActionBarTextPacket(actionBar));
                 } else {
-                    actionBar = Component.literal("Menunggu witness melihat").withStyle(ChatFormatting.AQUA);
+                    Component actionBar = Component.literal("Menunggu witness melihat").withStyle(ChatFormatting.AQUA);
+                    com.deception.network.ModNetworking.sendNightActionBarTo(player, actionBar);
                 }
             }
-            
-            com.deception.network.ModNetworking.sendNightActionBarTo(player, actionBar);
+            // Gak ada fase murderer/witness yang lagi berlangsung -- overlay
+            // custom-nya udah di-clear di awal method, gak perlu ngapa-ngapain lagi.
         } else if (state == State.DISCUSS) {
             int minutes = discussTicksLeft / 1200;
             int seconds = (discussTicksLeft % 1200) / 20;
             Component actionBar = Component.literal(String.format("⏱ Diskusi: %02d:%02d", minutes, seconds))
                     .withStyle(ChatFormatting.GOLD);
-            com.deception.network.ModNetworking.sendNightActionBarTo(player, actionBar);
+            player.connection.send(new ClientboundSetActionBarTextPacket(actionBar));
         } else if (state == State.COUNTDOWN) {
             int secondsLeft = (int) Math.ceil(countdownTicks / 20.0);
             if (secondsLeft > 0) {
                 Component actionBar = Component.literal("Game dimulai dalam " + secondsLeft + " detik")
                         .withStyle(ChatFormatting.GOLD);
-                com.deception.network.ModNetworking.sendNightActionBarTo(player, actionBar);
+                player.connection.send(new ClientboundSetActionBarTextPacket(actionBar));
             }
-        } else {
-            // State lain, clear actionbar custom (bukan vanilla -- overlay
-            // custom-nya gak kepengaruh sama vanilla clear)
-            com.deception.network.ModNetworking.sendNightActionBarTo(player, Component.empty());
         }
+        // State lain (IDLE, SHUFFLE, dst) -- overlay custom-nya udah di-clear di awal.
     }
 
     // Method baru untuk sinkronisasi title
@@ -2032,8 +2116,10 @@ public class GameManager {
     /**
      * Dipanggil pas "witness buka mata" (openWitnessWindow). Kalo witness
      * udah offline dari sebelum giliran dia, langsung mulai timer
-     * auto-skip. Sekaligus ngecek murderer/accomplice (buat info ke FS
-     * doang, gak ada dampak logic karena giliran mereka udah lewat).
+     * auto-skip. Sekaligus ngecek murderer/accomplice -- kalo masih
+     * offline di titik ini, witness DIKASIH TAU (baru sekarang boleh,
+     * karena ini emang giliran dia liat) lewat notifyWitnessKillerLeft(),
+     * plus FS dikasih info role spesifik yang offline.
      */
     private void checkWitnessWakeUpOffline() {
         if (witnessConfirmed || nightWitnessUuid == null) return;
@@ -2076,11 +2162,15 @@ public class GameManager {
         }
 
         // Witness baru "bangun" sekarang, jadi baru di titik inilah dia
-        // boleh dikasih tau kalo salah satu orang jahat gak ada -- tetep
-        // generik, gak nyebut role spesifik (Murderer/Accomplice) biar gak
-        // bocorin identitas.
-        if (murdererStillOffline || accompliceStillOffline) {
-            notifyRole(Role.witness, Component.literal("Orang jahat keluar server.").withStyle(ChatFormatting.RED));
+        // boleh dikasih tau kalo salah satu orang jahat gak ada -- satu
+        // pesan per orang, format sama kaya pas dia left real-time di
+        // tengah jendela witness (lihat notifyWitnessKillerLeft), tetep
+        // gak nyebut role spesifik biar gak bocorin identitas.
+        if (murdererStillOffline) {
+            notifyWitnessKillerLeft(getPlayerName(murdererUuid));
+        }
+        if (accompliceStillOffline) {
+            notifyWitnessKillerLeft(getPlayerName(accompliceUuid));
         }
     }
 
@@ -2134,6 +2224,13 @@ public class GameManager {
             com.deception.network.ModNetworking.broadcastNightTitle(
                     Component.literal("Semua orang buka mata").withStyle(ChatFormatting.GOLD),
                     Component.empty(), 10, NIGHT_WAKE_HOLD, 10);
+
+            UUID fsUuid = null;
+            for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
+                if (e.getValue() == Role.forensic_scientist) { fsUuid = e.getKey(); break; }
+            }
+            giveForensicScientistPapers(serverRef, fsUuid);
+            broadcastForensicWaitActionBar();
 
             nightWakeAllAt = Integer.MAX_VALUE;
             nightDoneAt = nightTicksElapsed + NIGHT_WAKE_HOLD;
@@ -2256,6 +2353,126 @@ public class GameManager {
         return list;
     }
 
+    // ---------- Investigation paper (Forensic Scientist) ----------
+
+    // Kalo FS lagi offline pas giveForensicScientistPapers dipanggil,
+    // kategori yang UDAH DIACAK disimpen di sini (bukan di-random ulang)
+    // biar pas dia rejoin (onPlayerRejoined) langsung dikasih yang sama.
+    private UUID pendingForensicScientistUuid = null;
+    private List<ForensicPaperData.Category> pendingForensicPaperCategories = null;
+    // Guard biar gak dobel dikasih -- "semua orang buka mata" bisa kepicu
+    // dari tick normal ATAU dari /deception skipreveal, keduanya manggil
+    // giveForensicScientistPapers.
+    private boolean forensicPapersGivenThisRound = false;
+
+    /**
+     * Kasih 6 investigation paper kosong ke Forensic Scientist pas reveal
+     * kelar (dipanggil dari tickNightSequence pas "Semua orang buka mata"):
+     * 2 kategori tetap (penyebab kematian, lokasi kejadian) + 4 kategori
+     * acak dari scene tiles. Tiap stack ditandain NBT "ForensicCategory"
+     * (dibaca InvestigationPaperItem buat buka ForensicPaperScreen) +
+     * "CanPlaceOn" black_wool (soalnya semua player gamemode adventure pas
+     * main, adventure mode gak bisa naro block kecuali item-nya punya tag
+     * ini). Kalo FS-nya lagi offline, disimpen dulu -- lihat
+     * pendingForensicScientistUuid & onPlayerRejoined.
+     */
+    private void giveForensicScientistPapers(MinecraftServer server, UUID fsUuid) {
+        if (fsUuid == null || forensicPapersGivenThisRound) return;
+        forensicPapersGivenThisRound = true;
+
+        List<ForensicPaperData.Category> categories = new ArrayList<>();
+        categories.add(ForensicPaperData.CAUSE_OF_DEATH);
+        categories.add(ForensicPaperData.LOCATION_OF_CRIME);
+
+        List<ForensicPaperData.Category> sceneTilePool = new ArrayList<>(ForensicPaperData.SCENE_TILES);
+        Collections.shuffle(sceneTilePool, shuffleRandom);
+        categories.addAll(sceneTilePool.subList(0, 4));
+
+        ServerPlayer fsPlayer = server.getPlayerList().getPlayer(fsUuid);
+        if (fsPlayer == null) {
+            pendingForensicScientistUuid = fsUuid;
+            pendingForensicPaperCategories = categories;
+            return;
+        }
+        deliverForensicPapers(fsPlayer, categories);
+    }
+
+    private void deliverForensicPapers(ServerPlayer fsPlayer, List<ForensicPaperData.Category> categories) {
+        for (ForensicPaperData.Category category : categories) {
+            ItemStack stack = new ItemStack(ModItems.INVESTIGATION_PAPER.get());
+            CompoundTag tag = stack.getOrCreateTag();
+            tag.putString("ForensicCategory", category.displayName());
+            ListTag canPlaceOn = new ListTag();
+            canPlaceOn.add(StringTag.valueOf("minecraft:black_wool"));
+            tag.put("CanPlaceOn", canPlaceOn);
+            stack.setHoverName(Component.literal(category.displayName()));
+
+            fsPlayer.getInventory().add(stack);
+        }
+    }
+
+    /** Tag entitas display sama kayak spawnOwnerHead, biar restoreArena() otomatis bersihin. */
+    public void spawnInvestigationPaperText(ServerLevel level, BlockPos pos, Direction facing, String text) {
+        // Nempel di permukaan kertasnya (deket tepi luar block, bukan di
+        // tengah) -- 0.5 = tepat di tepi, dikurangin dikit biar gak z-fight
+        // sama mesh kertasnya sendiri.
+        double offset = 0.47;
+        // TextDisplay nge-anchor teksnya dari BAWAH terus naik ke atas
+        // (posisi Y = tepi bawah teks, bukan tengah) -- makanya dikurangin
+        // biar keliatan di tengah kertas, bukan ngambang di atas block-nya.
+        double textY = pos.getY() + 0.4;
+        double textX = pos.getX() + -0.45;
+        double textZ = pos.getZ() + 0.5;
+
+        switch (facing) {
+            case NORTH -> textZ -= offset;
+            case SOUTH -> textZ += offset;
+            case WEST -> textX -= offset;
+            case EAST -> textX += offset;
+            default -> {}
+        }
+
+        // Jawaban lebih dari 1 kata -> pecah per kata jadi baris baru biar
+        // muat di kertas 1 block yang kecil.
+        String displayText = text.contains(" ") ? text.replace(" ", "\n") : text;
+
+        Display.TextDisplay display = (Display.TextDisplay) EntityType.TEXT_DISPLAY.create(level);
+        if (display == null) return;
+
+        CompoundTag tag = new CompoundTag();
+        tag.putString("text", Component.Serializer.toJson(
+                Component.literal(displayText).withStyle(ChatFormatting.BLACK)));
+        tag.putString("billboard", "fixed");
+        tag.putInt("background", 0);
+        tag.putInt("line_width", 90);
+        tag.putByte("see_through", (byte) 1);
+        tag.putByte("default_background", (byte) 0);
+
+        CompoundTag transformationTag = new CompoundTag();
+        transformationTag.put("translation", floatList(0F, 0F, 0F));
+        transformationTag.put("left_rotation", floatList(0F, 0F, 0F, 1F));
+        transformationTag.put("right_rotation", floatList(0F, 0F, 0F, 1F));
+        transformationTag.put("scale", floatList(0.5F, 0.5F, 0.5F));
+        tag.put("transformation", transformationTag);
+
+        display.load(tag);
+        display.addTag("deception_display");
+        display.setYRot(facing.toYRot());
+        display.setPos(textX, textY, textZ);
+
+        level.addFreshEntity(display);
+    }
+
+    /** Dipanggil dari InvestigationPaperBlock#onRemove pas block-nya beneran ilang (bukan cuma ganti state). */
+    public void despawnInvestigationPaperText(ServerLevel level, BlockPos pos) {
+        AABB nearby = new AABB(pos).inflate(0.6);
+        for (Entity entity : level.getEntitiesOfClass(Display.TextDisplay.class, nearby)) {
+            if (entity.getTags().contains("deception_display")) {
+                entity.discard();
+            }
+        }
+    }
+
     // ---------- Tick loop ----------
 
     public void tick() {
@@ -2302,6 +2519,9 @@ public class GameManager {
             tickNightSequence();
         } else if (state == State.DISCUSS) {
             discussTicksLeft--;
+            if (globalTickCounter % 10 == 0) {
+                broadcastForensicWaitActionBar();
+            }
             if (discussTicksLeft <= 0) {
                 state = State.RUNNING;
                 broadcast(serverRef, Component.literal("Waktu diskusi habis!").withStyle(ChatFormatting.RED));

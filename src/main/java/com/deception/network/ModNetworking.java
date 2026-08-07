@@ -1,5 +1,6 @@
 package com.deception.network;
 
+import java.util.List;
 import java.util.UUID;
 
 import com.deception.DeceptionMod;
@@ -9,6 +10,7 @@ import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
 import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.network.simple.SimpleChannel;
@@ -46,6 +48,14 @@ public class ModNetworking {
                 BlindfoldSnapShutPacket::encode,
                 BlindfoldSnapShutPacket::decode,
                 BlindfoldSnapShutPacket::handle);
+        CHANNEL.registerMessage(packetId++, OpenForensicPickerPacket.class,
+                OpenForensicPickerPacket::encode,
+                OpenForensicPickerPacket::decode,
+                OpenForensicPickerPacket::handle);
+        CHANNEL.registerMessage(packetId++, ChooseForensicOptionPacket.class,
+                ChooseForensicOptionPacket::encode,
+                ChooseForensicOptionPacket::decode,
+                ChooseForensicOptionPacket::handle);
     }
 
     public static void sendBlindfoldState(ServerPlayer player, boolean closing) {
@@ -77,5 +87,9 @@ public class ModNetworking {
     // bakal nge-update overlay custom-nya, makanya sebelumnya keliatan stale.
     public static void sendNightActionBarTo(ServerPlayer player, Component message) {
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new NightActionBarPacket(message));
+    }
+
+    public static void sendOpenForensicPicker(ServerPlayer player, String category, List<String> options, InteractionHand hand) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new OpenForensicPickerPacket(category, options, hand));
     }
 }
