@@ -46,10 +46,15 @@ minecraft {
 
 repositories {
     mavenCentral()
+    maven {
+        // Simple Voice Chat API (plugin buat integrasi mute presentasi)
+        url 'https://maven.maxhenkel.de/repository/public'
+    }
 }
 
 dependencies {
     minecraft 'net.minecraftforge:forge:1.20.1-47.3.0'
+    compileOnly "de.maxhenkel.voicechat:voicechat-api:2.6.20"
 }
 
 tasks.named('processResources', ProcessResources).configure {

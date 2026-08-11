@@ -5,11 +5,14 @@ import com.deception.block.InvestigationPaperBlock;
 import com.deception.block.InvestigationPaperBlockEntity;
 import com.deception.game.ForensicPaperData;
 import com.deception.game.GameManager;
+import com.deception.game.PresentationManager;
 import com.deception.init.ModBlocks;
 import com.deception.network.ModNetworking;
+import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
@@ -77,6 +80,22 @@ public class InvestigationPaperItem extends ClueBlockItem {
         String category = (tag != null) ? tag.getString("ForensicCategory") : null;
         String chosenText = (tag != null && tag.contains("ForensicChoice")) ? tag.getString("ForensicChoice") : null;
 
+        // Gate ronde 2/3 "gabisa naro sebelum hapus tile lama" ini SENGAJA
+        // dibaca dari NBT stack-nya sendiri (bukan query state server-only
+        // kayak PresentationManager langsung), soalnya method place() ini
+        // jalan di client DAN server buat prediksi -- kalo sumber gate-nya
+        // cuma ada di server, client bakal salah predict "boleh" & itemnya
+        // keliatan abis dipake padahal server nolak taro (nyangkut ilang,
+        // gak balik ke inventory).
+        if (tag != null && tag.getBoolean(PresentationManager.PLACEMENT_LOCKED_TAG)) {
+            if (context.getPlayer() instanceof ServerPlayer sp) {
+                sp.sendSystemMessage(Component.literal(
+                        "Hapus salah satu scene tile dulu (pake Penghapus Scene Tile) sebelum naro clue baru.")
+                        .withStyle(ChatFormatting.RED));
+            }
+            return InteractionResult.FAIL;
+        }
+
         InteractionResult result = super.place(context);
         if (chosenText != null && result.consumesAction() && context.getLevel() instanceof ServerLevel serverLevel) {
             BlockPos pos = context.getClickedPos();
@@ -86,6 +105,9 @@ public class InvestigationPaperItem extends ClueBlockItem {
                 GameManager.get().spawnInvestigationPaperText(serverLevel, pos, facing, chosenText);
                 if (serverLevel.getBlockEntity(pos) instanceof InvestigationPaperBlockEntity paperEntity) {
                     paperEntity.setCategoryAndChoice(category, chosenText);
+                }
+                if (context.getPlayer() instanceof ServerPlayer placer) {
+                    PresentationManager.get().onForensicPaperPlaced(placer, serverLevel.getServer());
                 }
             }
         }

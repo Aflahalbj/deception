@@ -4,11 +4,13 @@ import java.util.UUID;
 
 import com.deception.command.ModCommands;
 import com.deception.game.GameManager;
+import com.deception.game.PresentationManager;
 import com.deception.init.ClueHoverOverlay;
 import com.deception.init.ModBlockEntities;
 import com.deception.init.ModBlocks;
 import com.deception.init.ModClientSetup;
 import com.deception.init.ModItems;
+import com.deception.menu.ModMenus;
 
 import net.minecraft.ChatFormatting;
 import net.minecraft.server.level.ServerLevel;
@@ -18,6 +20,7 @@ import net.minecraftforge.client.event.RegisterGuiOverlaysEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.item.ItemTossEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
@@ -45,6 +48,7 @@ public class DeceptionMod {
         ModBlockEntities.BLOCK_ENTITIES.register(modEventBus);
         ModItems.ITEMS.register(modEventBus);
         ModItems.CREATIVE_TABS.register(modEventBus);
+        ModMenus.MENUS.register(modEventBus);
 
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(ModClientSetup::onClientSetup);
@@ -115,7 +119,49 @@ public class DeceptionMod {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         if (!(event.getLevel() instanceof ServerLevel level)) return;
 
+        // Flint and steel "penghapus scene tile" (ronde 2/3) -- selalu
+        // di-cancel begitu ke-detect (lihat javadoc tryRemoveTile), gak
+        // pernah dibiarin lanjut ke behavior vanilla (nyalain api dll).
+        if (PresentationManager.get().tryRemoveTile(player, level, event.getPos(), player.getItemInHand(event.getHand()))) {
+            event.setCanceled(true);
+            return;
+        }
+
         if (GameManager.get().onMurdererClickClue(player, level, event.getPos())) {
+            event.setCanceled(true);
+        }
+    }
+
+    // Cegah police_badge di-drop (Q) -- lihat PresentationManager, item ini
+    // dikunci di hotbar slot 5 selama diskusi/presentasi. Bagian "gak bisa
+    // dipindah/di-swap" ditangani safety-net tiap tick di PresentationManager#tick.
+    @SubscribeEvent
+    public void onItemToss(ItemTossEvent event) {
+        if (PresentationManager.get().isLockedItem(event.getEntity().getItem())) {
+            event.setCanceled(true);
+        }
+    }
+
+    // Klik kanan police_badge (totem asli yang di-retexture) di udara --
+    // trigger flow "confession" ("X ingin menyelesaikan kasus"), lihat
+    // PresentationManager#tryStartConfession. Klik kanan bow "Tebak Witness"
+    // (murderer, gak ada arrow-nya jadi gak bisa ditembakin) buka UI chest
+    // isi head semua player buat nebak witness -- lihat
+    // PresentationManager#tryOpenWitnessGuessMenu.
+    @SubscribeEvent
+    public void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
+        if (event.getLevel().isClientSide()) return;
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+
+        ItemStack stack = player.getItemInHand(event.getHand());
+
+        if (PresentationManager.get().tryStartConfession(player, player.getServer())) {
+            event.setCanceled(true);
+            return;
+        }
+
+        if (PresentationManager.get().isWitnessGuessBow(stack)
+                && PresentationManager.get().tryOpenWitnessGuessMenu(player, player.getServer())) {
             event.setCanceled(true);
         }
     }

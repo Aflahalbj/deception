@@ -1,6 +1,7 @@
 package com.deception.command;
 
 import com.deception.game.GameManager;
+import com.deception.game.PresentationManager;
 import com.deception.game.Role;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
@@ -162,6 +163,18 @@ public class ModCommands {
                                 .executes(ctx -> {
                                     ctx.getSource().sendSuccess(() -> Component.literal("Timer diskusi default: 10 menit.").withStyle(ChatFormatting.GREEN), false);
                                     return 1;
+                                }))
+                        .then(literal("presentation")
+                                .then(argument("detik", IntegerArgumentType.integer(5, 300))
+                                        .executes(ctx -> {
+                                            int detik = IntegerArgumentType.getInteger(ctx, "detik");
+                                            PresentationManager.get().setPresentasiTurnSeconds(detik);
+                                            ctx.getSource().sendSuccess(() -> Component.literal("Timer presentasi diset ke " + detik + " detik per giliran.").withStyle(ChatFormatting.GREEN), true);
+                                            return 1;
+                                        }))
+                                .executes(ctx -> {
+                                    ctx.getSource().sendSuccess(() -> Component.literal("Timer presentasi default: 30 detik per giliran.").withStyle(ChatFormatting.GREEN), false);
+                                    return 1;
                                 })))
 
                 // Di dalam register method, setelah literal("settimer") atau di mana aja
@@ -254,6 +267,60 @@ public class ModCommands {
                                 ctx.getSource().sendFailure(Component.literal("Gagal skip: bukan lagi fase night, atau gagal random-in item murderer."));
                                 return 0;
                             }
+                        }))
+                // Vote skip diskusi -- semua player teregistrasi bisa manggil,
+                // gak perlu OP. Toggle vote; kalo mayoritas player ONLINE
+                // udah vote, diskusi langsung dilewatin ke presentasi (lihat
+                // PresentationManager#voteSkip).
+                .then(literal("skip")
+                        .executes(ctx -> {
+                            if (!(ctx.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) {
+                                ctx.getSource().sendFailure(Component.literal("Command ini hanya bisa dijalankan oleh player."));
+                                return 0;
+                            }
+                            boolean ok = PresentationManager.get().voteSkip(player, ctx.getSource().getServer());
+                            if (!ok) {
+                                ctx.getSource().sendFailure(Component.literal("Gak ada diskusi yang bisa di-skip sekarang."));
+                                return 0;
+                            }
+                            return 1;
+                        }))
+
+                // Testing: paksa mulai diskusi tanpa perlu FS beneran naro
+                // paper (lihat PresentationManager#forceStartDiscussion).
+                .then(literal("skipfs")
+                        .requires(ModCommands::isOpOrForensicScientist)
+                        .executes(ctx -> {
+                            boolean ok = PresentationManager.get().forceStartDiscussion(ctx.getSource().getServer());
+                            if (ok) {
+                                ctx.getSource().sendSuccess(() -> Component.literal("Diskusi dipaksa mulai (skip nunggu FS naro paper).").withStyle(ChatFormatting.GREEN), true);
+                                return 1;
+                            }
+                            ctx.getSource().sendFailure(Component.literal("Gagal skip: bukan lagi nunggu FS, atau diskusi udah mulai."));
+                            return 0;
+                        }))
+
+                // FS jawab [BENAR]/[SALAH] pas ada yang confession (klik
+                // kanan police_badge) -- lihat PresentationManager#resolveConfession.
+                .then(literal("true")
+                        .requires(ModCommands::isOpOrForensicScientist)
+                        .executes(ctx -> {
+                            boolean ok = PresentationManager.get().resolveConfession(true, ctx.getSource().getServer());
+                            if (!ok) {
+                                ctx.getSource().sendFailure(Component.literal("Gak ada confession yang lagi nunggu jawaban."));
+                                return 0;
+                            }
+                            return 1;
+                        }))
+                .then(literal("false")
+                        .requires(ModCommands::isOpOrForensicScientist)
+                        .executes(ctx -> {
+                            boolean ok = PresentationManager.get().resolveConfession(false, ctx.getSource().getServer());
+                            if (!ok) {
+                                ctx.getSource().sendFailure(Component.literal("Gak ada confession yang lagi nunggu jawaban."));
+                                return 0;
+                            }
+                            return 1;
                         }))
                         // Di dalam register method, setelah literal("skipreveal") atau di bagian manapun
                 .then(literal("confirm")

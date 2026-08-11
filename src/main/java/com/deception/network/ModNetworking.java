@@ -56,6 +56,10 @@ public class ModNetworking {
                 ChooseForensicOptionPacket::encode,
                 ChooseForensicOptionPacket::decode,
                 ChooseForensicOptionPacket::handle);
+        CHANNEL.registerMessage(packetId++, PoliceBadgeHolderPacket.class,
+                PoliceBadgeHolderPacket::encode,
+                PoliceBadgeHolderPacket::decode,
+                PoliceBadgeHolderPacket::handle);
     }
 
     public static void sendBlindfoldState(ServerPlayer player, boolean closing) {
@@ -91,5 +95,9 @@ public class ModNetworking {
 
     public static void sendOpenForensicPicker(ServerPlayer player, String category, List<String> options, InteractionHand hand) {
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new OpenForensicPickerPacket(category, options, hand));
+    }
+
+    public static void broadcastPoliceBadgeHolder(UUID uuid, boolean hasBadge) {
+        CHANNEL.send(PacketDistributor.ALL.noArg(), new PoliceBadgeHolderPacket(uuid, hasBadge));
     }
 }
