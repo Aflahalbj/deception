@@ -3,32 +3,31 @@ package com.deception.game;
 import com.deception.block.InvestigationPaperBlockEntity;
 import com.deception.init.ModBlocks;
 import com.deception.init.ModItems;
-import com.deception.menu.WitnessGuessMenu;
 import com.deception.network.ModNetworking;
-import com.mojang.authlib.GameProfile;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
-import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.StringTag;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
-import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
+import net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket;
+import net.minecraft.network.protocol.game.ClientboundSetCarriedItemPacket;
 import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.SimpleContainer;
-import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraftforge.network.NetworkHooks;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -64,6 +63,16 @@ public class PresentationManager {
 
     private boolean discussionStarted = false;
     private final Set<UUID> badgeHolders = new HashSet<>();
+    // Police badge itu jatah SEKALI SEUMUR GAME, bukan per-ronde. Set ini
+    // nyimpen siapa yang udah kepake badge-nya (lihat resolveConfession) biar
+    // pas ronde baru mulai (onForensicPaperPlaced dipanggil lagi) dia GAK
+    // dikasih badge baru.
+    private final Set<UUID> usedBadges = new HashSet<>();
+    // Badge udah pernah dibagi di game ini. Dipake onPlayerRejoined buat
+    // mutusin apakah yang baru balik ini harusnya udah punya badge --
+    // badgeHolders gak bisa dipake, soalnya yang offline pas pembagian
+    // emang gak pernah masuk ke situ.
+    private boolean badgesGiven = false;
     private final Set<UUID> skipVotes = new HashSet<>();
     private final Set<String> givenCategories = new HashSet<>();
 
@@ -83,14 +92,20 @@ public class PresentationManager {
     // badge-nya. Null = gak ada confession yang lagi berlangsung.
     private UUID pendingConfessorUuid = null;
     private int confessionTitleDelayTicks = 0;
+    // Animasi titik jalan buat actionbar "menunggu ..." -- dipake bareng
+    // sama fase confession & shootout (cuma salah satu yang aktif).
+    private int waitDotTicks = 0;
 
     // Tebakan penyelidik BENAR tapi ada witness -- murderer dikasih 1
-    // kesempatan terakhir "membungkam" witness pake panah sebelum kemenangan
-    // penyelidik final (lihat startWitnessShootout).
+    // kesempatan terakhir "membungkam" witness pake 1 peluru shotgun sebelum
+    // kemenangan penyelidik final (lihat startWitnessShootout).
     private boolean shootoutActive = false;
     private UUID shootoutMurdererUuid = null;
     private UUID shootoutWitnessUuid = null;
-    private int shootoutDotTicks = 0;
+    // Pelatuk udah ditarik, lagi nunggu kepastian pelurunya nyangkut di
+    // seseorang apa kagak (lihat SHOT_RESOLVE_GRACE_TICKS).
+    private boolean shotFired = false;
+    private int shotGraceTicks = 0;
 
     // Hasil "game selesai" yang lagi nunggu di-proses di tick() berikutnya
     // (lihat queueEndGame) -- gak boleh manggil GameManager#endGameWithResult
@@ -120,7 +135,10 @@ public class PresentationManager {
         this.presentasiTurnTicks = DEFAULT_PRESENTASI_TURN_SECONDS * 20;
     }
 
-    public void reset() {
+    public void reset(MinecraftServer server) {
+        // Jaga-jaga kalo game di-stop paksa pas shootout masih jalan --
+        // jangan sampe ada player yang kebekuan selamanya.
+        if (server != null) PlayerFreeze.unfreezeAll(server);
         discussionStarted = false;
         // Beritahu client badge-nya udah dicabut (lihat javadoc
         // PoliceBadgeClientState) -- kalo cuma di-clear() di sini doang,
@@ -130,6 +148,8 @@ public class PresentationManager {
             ModNetworking.broadcastPoliceBadgeHolder(uuid, false);
         }
         badgeHolders.clear();
+        usedBadges.clear();
+        badgesGiven = false;
         skipVotes.clear();
         givenCategories.clear();
         round = 1;
@@ -139,10 +159,12 @@ public class PresentationManager {
         presentasiTicksLeft = 0;
         pendingConfessorUuid = null;
         confessionTitleDelayTicks = 0;
+        waitDotTicks = 0;
         shootoutActive = false;
         shootoutMurdererUuid = null;
         shootoutWitnessUuid = null;
-        shootoutDotTicks = 0;
+        shotFired = false;
+        shotGraceTicks = 0;
         pendingEndTitle = null;
         pendingEndMessage = null;
     }
@@ -165,6 +187,10 @@ public class PresentationManager {
         discussionStarted = true;
 
         Component title = Component.literal("Diskusi Ronde " + round + " dimulai").withStyle(ChatFormatting.GREEN);
+        GameManager.get().broadcast(server, Component.literal(""));
+        GameManager.get().broadcast(server, Component.literal("  DISKUSI DIMULAI").withStyle(ChatFormatting.GREEN));
+        GameManager.get().broadcast(server, Component.literal("").withStyle(ChatFormatting.WHITE));
+        GameManager.get().broadcast(server, Component.literal("  Perhatikan petunjuk yang diberikan forensic scientist, \n  cari means & clue yang sesuai dengan petunjuk.").withStyle(ChatFormatting.WHITE));
         for (UUID uuid : GameManager.get().getRegisteredPlayers()) {
             ServerPlayer player = server.getPlayerList().getPlayer(uuid);
             if (player == null) continue;
@@ -173,16 +199,74 @@ public class PresentationManager {
             player.connection.send(new ClientboundSetSubtitleTextPacket(Component.empty()));
             player.connection.send(new ClientboundSetTitleTextPacket(title));
 
-            if (GameManager.get().getRoleAssignments().get(uuid) != Role.forensic_scientist) {
+            // Badge cuma dikasih ke yang belum pernah pake (lihat usedBadges)
+            // -- ronde baru bukan berarti dapet jatah badge baru.
+            if (GameManager.get().getRoleAssignments().get(uuid) != Role.forensic_scientist
+                    && !usedBadges.contains(uuid)) {
                 giveAndLockBadge(player);
+                badgesGiven = true;
             }
         }
     }
 
-    // ---------- Vote skip diskusi ----------
+    // ---------- Skip (diskusi & presentasi) ----------
+
+    /** Hasil /deception skip -- command yang nerjemahin jadi pesan ke pemanggil. */
+    public enum SkipResult {
+        /** Vote skip diskusi ke-toggle. Pesannya udah dibroadcast dari dalem. */
+        DISCUSS_VOTED,
+        /** Giliran presentasi yang lagi jalan dilewatin. */
+        PRESENTASI_SKIPPED,
+        /** Lagi presentasi, tapi yang manggil bukan si pembicara/FS/OP. */
+        NO_PERMISSION,
+        /** Lagi gak di fase yang bisa di-skip. */
+        NOTHING_TO_SKIP
+    }
+
+    /** Pintu masuk /deception skip -- nentuin sendiri ini skip diskusi apa presentasi. */
+    public SkipResult skip(ServerPlayer player, MinecraftServer server) {
+        GameManager.State state = GameManager.get().getState();
+        if (state == GameManager.State.DISCUSS) {
+            return voteSkip(player, server) ? SkipResult.DISCUSS_VOTED : SkipResult.NOTHING_TO_SKIP;
+        }
+        if (state == GameManager.State.PRESENTASI) {
+            return skipPresentasi(player, server);
+        }
+        return SkipResult.NOTHING_TO_SKIP;
+    }
+
+    /**
+     * Skip giliran presentasi yang lagi jalan. Beda sama vote skip diskusi:
+     * ini GAK pake voting -- yang lagi dapet giliran berhak nyudahin sendiri,
+     * FS & OP berhak maksa lanjut.
+     */
+    private SkipResult skipPresentasi(ServerPlayer player, MinecraftServer server) {
+        UUID speaker = getCurrentSpeaker();
+        if (speaker == null) return SkipResult.NOTHING_TO_SKIP;
+
+        UUID uuid = player.getUUID();
+        boolean isSpeaker = uuid.equals(speaker);
+        boolean isForensicScientist =
+                GameManager.get().getRoleAssignments().get(uuid) == Role.forensic_scientist;
+        if (!isSpeaker && !isForensicScientist && !player.hasPermissions(2)) {
+            return SkipResult.NO_PERMISSION;
+        }
+
+        String speakerName = GameManager.get().getPlayerName(speaker);
+        GameManager.get().broadcast(server, Component.literal(isSpeaker
+                        ? speakerName + " menyelesaikan gilirannya lebih awal."
+                        : "Giliran " + speakerName + " dilewati oleh " + GameManager.get().getPlayerName(uuid) + ".")
+                .withStyle(ChatFormatting.YELLOW));
+
+        // Cukup abisin sisa waktunya, biar pindah giliran (termasuk kalo ini
+        // giliran TERAKHIR -> lanjut ronde/RUNNING) tetep lewat jalur yang
+        // sama persis kayak waktu abis normal, lihat tickPresentasi.
+        presentasiTicksLeft = 0;
+        return SkipResult.PRESENTASI_SKIPPED;
+    }
 
     /** @return false kalo dipanggil di luar fase diskusi yang lagi berjalan (command bakal kasih tau gagal). */
-    public boolean voteSkip(ServerPlayer player, MinecraftServer server) {
+    private boolean voteSkip(ServerPlayer player, MinecraftServer server) {
         if (GameManager.get().getState() != GameManager.State.DISCUSS || !discussionStarted) return false;
 
         UUID uuid = player.getUUID();
@@ -232,6 +316,32 @@ public class PresentationManager {
     // pas dipake ("Confession", lihat di bawah) OTOMATIS jalan sempurna
     // (partikel+kilat+suara vanilla asli), gak perlu hack rendering yang
     // gak bisa dipastikan jalan.
+
+    /**
+     * Dipanggil GameManager#onPlayerRejoined. Badge itu dibagi sekali pas
+     * diskusi mulai, dan yang lagi offline waktu itu kelewat -- jadi
+     * jatahnya dikasih di sini pas dia balik. Sekalian nyamain ulang icon
+     * badge di nametag, soalnya PoliceBadgeClientState di client cuma
+     * di-update lewat broadcast dan yang kekirim selama dia offline
+     * ke-lewat semua.
+     */
+    public void onPlayerRejoined(ServerPlayer player, MinecraftServer server) {
+        UUID uuid = player.getUUID();
+
+        if (badgesGiven && !usedBadges.contains(uuid)
+                && GameManager.get().getRoleAssignments().get(uuid) != Role.forensic_scientist) {
+            giveAndLockBadge(player);
+        } else if (usedBadges.contains(uuid)) {
+            // Jatahnya udah kepake pas dia masih online. Bersihin sisa item
+            // di inventory-nya, jaga-jaga dia left persis di sela-sela
+            // pencabutan badge.
+            clearBadge(player);
+        }
+
+        for (UUID other : GameManager.get().getRegisteredPlayers()) {
+            ModNetworking.sendPoliceBadgeHolder(player, other, badgeHolders.contains(other));
+        }
+    }
 
     private void giveAndLockBadge(ServerPlayer player) {
         badgeHolders.add(player.getUUID());
@@ -293,16 +403,23 @@ public class PresentationManager {
             }
         }
 
+        PlayerFreeze.tick(server);
+        if (shootoutActive) {
+            tickShootout(server);
+        }
+
         // Selagi ada confession yang lagi nunggu keputusan FS ATAU shootout
         // lagi jalan, diskusi/presentasi DI-PAUSE (lihat GameManager#tick,
         // dicek lewat isBusy()) -- actionbar-nya jadi tanggung jawab kita
         // sepenuhnya di sini, biar gak rebutan sama actionbar diskusi/
-        // presentasi yang jalan bareng.
+        // presentasi yang jalan bareng. Dua-duanya SENGAJA gak pake hitung
+        // mundur: nunggu sampe orangnya beneran mutusin/nembak, bukan
+        // sampe waktunya abis.
         if (isBusy()) {
-            shootoutDotTicks++;
-            if (shootoutDotTicks % 10 == 0) {
-                int dotCount = (int) ((shootoutDotTicks / 10) % 4);
-                String base = shootoutActive ? "Menunggu murderer menebak witness" : "Menunggu keputusan forensic scientist";
+            waitDotTicks++;
+            if (waitDotTicks % 10 == 0) {
+                int dotCount = (int) ((waitDotTicks / 10) % 4);
+                String base = shootoutActive ? "Menunggu murderer menembak" : "Menunggu keputusan forensic scientist";
                 Component actionBar = Component.literal(base + ".".repeat(dotCount)).withStyle(ChatFormatting.GOLD);
                 GameManager.get().broadcastActionBarToAll(actionBar);
             }
@@ -345,19 +462,34 @@ public class PresentationManager {
     public boolean tryStartConfession(ServerPlayer player, MinecraftServer server) {
         ItemStack held = player.getMainHandItem();
         if (!isLockedItem(held) && !isLockedItem(player.getOffhandItem())) return false;
+        if (shootoutActive) {
+            // Fase shootout udah jalan -- kasusnya udah kelar ditebak, tinggal
+            // nunggu tembakan murderer. Badge gak ada gunanya lagi di sini.
+            return true;
+        }
         if (pendingConfessorUuid != null) {
-            player.sendSystemMessage(Component.literal("Masih ada yang lagi nunggu keputusan FS, tunggu dulu.").withStyle(ChatFormatting.RED));
+            player.sendSystemMessage(Component.literal("Masih ada tuduhan yang berlangsung, tunggu keputusan FS.").withStyle(ChatFormatting.RED));
             return true;
         }
 
         pendingConfessorUuid = player.getUUID();
         confessionTitleDelayTicks = CONFESSION_TITLE_DELAY_TICKS;
 
-        // Full animasi pop totem vanilla asli (kilat layar + partikel +
-        // suara + popup ikon aktivasi) -- item-nya beneran Totem of Undying
-        // (di-retexture jadi badge), jadi popup-nya JUGA ikut nunjukin
-        // texture badge, bukan totem vanilla.
-        ((ServerLevel) player.level()).broadcastEntityEvent(player, (byte) 35);
+        // Badge dicabut SEKARANG, bukan nunggu FS jawab. Kalo nunggu, player
+        // yang left di tengah-tengah bakal kesimpen sama badge-nya di
+        // inventory offline-nya (resolveConfession cuma bisa ngebersihin
+        // player yang lagi online), terus balik lagi bawa badge yang
+        // harusnya udah kepake -- bisa dipake confess dua kali.
+        usedBadges.add(player.getUUID());
+        clearBadge(player);
+
+        // Animasi pop totem (partikel + suara + popup ikon aktivasi) di SEMUA
+        // layar. Sengaja pake packet sendiri, BUKAN broadcastEntityEvent(35)
+        // vanilla, soalnya popup-nya di vanilla cuma keliatan sama yang make
+        // -- lihat javadoc PoliceBadgeUsePacket. Item-nya tetep Totem of
+        // Undying asli (di-retexture jadi badge), jadi popup-nya ikut
+        // nunjukin texture badge, bukan totem vanilla.
+        ModNetworking.broadcastPoliceBadgeUse(player.getUUID());
         return true;
     }
 
@@ -365,13 +497,14 @@ public class PresentationManager {
         if (pendingConfessorUuid == null) return;
         String name = GameManager.get().getPlayerName(pendingConfessorUuid);
 
-        Component title = Component.literal(name + " ingin menyelesaikan kasus").withStyle(ChatFormatting.GOLD);
+        Component title = Component.literal(name).withStyle(ChatFormatting.GOLD);
+        Component subtitle = Component.literal("Ingin menyelesaikan kasus").withStyle(ChatFormatting.YELLOW);
         for (UUID uuid : GameManager.get().getRegisteredPlayers()) {
             ServerPlayer p = server.getPlayerList().getPlayer(uuid);
             if (p != null) {
                 p.connection.send(new ClientboundSetTitlesAnimationPacket(10, 40, 10));
-                p.connection.send(new ClientboundSetSubtitleTextPacket(Component.empty()));
                 p.connection.send(new ClientboundSetTitleTextPacket(title));
+                p.connection.send(new ClientboundSetSubtitleTextPacket(subtitle));
             }
         }
 
@@ -397,7 +530,7 @@ public class PresentationManager {
                 .withBold(true)
                 .withUnderlined(true)
                 .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, command))
-                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal("Klik buat jawab"))));
+                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal("Klik untuk menjawab"))));
     }
 
     /** Dipanggil /deception true (correct=true) atau /deception false (correct=false). @return false kalo gak ada confession yang pending. */
@@ -406,13 +539,9 @@ public class PresentationManager {
 
         UUID confessorUuid = pendingConfessorUuid;
         pendingConfessorUuid = null;
-        ServerPlayer confessor = server.getPlayerList().getPlayer(confessorUuid);
-        if (confessor != null) {
-            clearBadge(confessor);
-        } else {
-            badgeHolders.remove(confessorUuid);
-            ModNetworking.broadcastPoliceBadgeHolder(confessorUuid, false);
-        }
+        // Badge-nya udah dicabut + dicatet di usedBadges pas dia klik kanan
+        // (lihat tryStartConfession), jadi di sini gak ada yang perlu
+        // dibersihin lagi -- termasuk kalo dia keburu left.
 
         if (correct) {
             String name = GameManager.get().getPlayerName(confessorUuid);
@@ -439,20 +568,33 @@ public class PresentationManager {
             if (p != null) {
                 p.connection.send(new ClientboundSetTitlesAnimationPacket(5, 30, 10));
                 p.connection.send(new ClientboundSetSubtitleTextPacket(Component.empty()));
-                p.connection.send(new ClientboundSetTitleTextPacket(Component.literal("SALAH").withStyle(ChatFormatting.DARK_RED)));
+                p.connection.send(new ClientboundSetTitleTextPacket(Component.literal("TEBAKAN SALAH").withStyle(ChatFormatting.DARK_RED)));
             }
         }
 
         if (badgeHolders.isEmpty()) {
-            queueEndGame(Component.literal("PENJAHAT MENANG!").withStyle(ChatFormatting.DARK_RED),
-                    Component.literal("Semua police badge udah abis dipake, gak ada yang berhasil nebak. Penjahat menang.").withStyle(ChatFormatting.RED), true);
+            queueEndGame(Component.literal("PEMBUNUH MENANG!").withStyle(ChatFormatting.DARK_RED),
+                    Component.literal("Semua police badge sudah habis dipakai, tidak ada yang berhasil menebak. Pembunuh menang.").withStyle(ChatFormatting.RED), true);
         }
         return true;
     }
 
-    // ---------- Shootout murderer vs witness (tebak lewat UI chest) ----------
+    // ---------- Shootout murderer vs witness (nembak beneran) ----------
+    // Murderer dikasih shotgun CGM isi 1 peluru (lihat ShootoutGun), semua
+    // calon target dijejerin di depan cluster masing-masing dalam keadaan
+    // GAK BISA GERAK (lihat PlayerFreeze) -- jadi yang nentuin bukan
+    // refleks/aim, tapi murni dia nebak yang mana witness-nya. Kena witness
+    // = penjahat menang; salah orang atau pelurunya meleset = penyelidik
+    // menang.
 
-    private static final String WITNESS_GUESS_BOW_TAG = "DeceptionWitnessGuessBow";
+    /**
+     * Jeda setelah pelatuk ditarik sebelum divonis "meleset". Peluru CGM
+     * butuh beberapa tick buat nyampe sasaran, jadi gak bisa langsung
+     * divonis pas AmmoCount turun jadi 0.
+     */
+    private static final int SHOT_RESOLVE_GRACE_TICKS = 30;
+    /** Slot hotbar tempat shotgun dikunci (slot 1 di layar). */
+    private static final int SHOTGUN_SLOT = 0;
 
     private void startWitnessShootout(MinecraftServer server) {
         UUID murdererUuid = null;
@@ -472,73 +614,237 @@ public class PresentationManager {
         ServerPlayer murderer = server.getPlayerList().getPlayer(murdererUuid);
         if (murderer == null) {
             queueEndGame(Component.literal("TIM PENYELIDIK MENANG!").withStyle(ChatFormatting.GREEN),
-                    Component.literal("Murderer offline, gak bisa nebak. Tim penyelidik menang.").withStyle(ChatFormatting.GREEN), false);
+                    Component.literal("Murderer offline, tidak bisa menembak. Tim penyelidik menang.").withStyle(ChatFormatting.GREEN), false);
+            return;
+        }
+
+        ItemStack shotgun = ShootoutGun.createLoadedShotgun();
+        if (shotgun.isEmpty()) {
+            // CGM didaftar mandatory di mods.toml jadi normalnya mustahil --
+            // tapi kalo somehow kejadian, mending bilang terus terang
+            // daripada ngasih murderer senjata kosong yang gak bisa dipake.
+            server.getPlayerList().broadcastSystemMessage(
+                    Component.literal("Tidak dapat menemukan shotgun (mod CGM), fase tembakan dilewati.").withStyle(ChatFormatting.RED), false);
+            queueEndGame(Component.literal("TIM PENYELIDIK MENANG!").withStyle(ChatFormatting.GREEN),
+                    Component.literal("Tim penyelidik menang.").withStyle(ChatFormatting.GREEN), false);
             return;
         }
 
         shootoutActive = true;
         shootoutMurdererUuid = murdererUuid;
         shootoutWitnessUuid = witnessUuid;
-        shootoutDotTicks = 0;
+        shotFired = false;
+        shotGraceTicks = 0;
 
-        // Bow TANPA panah -- gak bisa dipake nembak beneran (vanilla nolak
-        // narik busur kalo gak ada panah), cuma dipake sebagai "pemicu"
-        // buat buka UI tebak witness pas diklik kanan (lihat
-        // DeceptionMod#onRightClickItem & tryOpenWitnessGuessMenu).
-        ItemStack bow = new ItemStack(Items.BOW);
-        bow.getOrCreateTag().putBoolean(WITNESS_GUESS_BOW_TAG, true);
-        bow.setHoverName(Component.literal("Tebak Witness").withStyle(ChatFormatting.DARK_RED));
-        murderer.getInventory().add(bow);
-    }
+        // PvP dimatiin pas game mulai (GameManager#startGame). Peluru CGM
+        // nyerang lewat Entity#hurt biasa, dan ServerPlayer#canHarmPlayer
+        // nolak MENTAH-MENTAH semua serangan antar-player selama PvP mati --
+        // jadi tanpa ini pelurunya nembus tanpa efek apa-apa dan
+        // onShootoutHit gak akan pernah kepanggil. Dibalikin ke semula
+        // otomatis di GameManager#abortGame pas game selesai.
+        server.setPvpAllowed(true);
 
-    public boolean isWitnessGuessBow(ItemStack stack) {
-        return !stack.isEmpty() && stack.getItem() == Items.BOW
-                && stack.getTag() != null && stack.getTag().getBoolean(WITNESS_GUESS_BOW_TAG);
-    }
+        lineUpTargets(server, murdererUuid);
 
-    /** Dipanggil DeceptionMod pas murderer klik kanan bow "tebak witness"-nya. */
-    public boolean tryOpenWitnessGuessMenu(ServerPlayer player, MinecraftServer server) {
-        if (!shootoutActive || !player.getUUID().equals(shootoutMurdererUuid)) return false;
+        murderer.getInventory().setItem(SHOTGUN_SLOT, shotgun);
+        // Pindah slot aktif ke shotgun-nya. `selected` itu state server, dan
+        // vanilla gak pernah ngirim balik ke client sendiri (normalnya client
+        // yang ngasih tau server) -- jadi harus dikabarin manual, kalo gak
+        // client-nya masih megang slot lama dan gun-nya keliatan gak kepegang.
+        murderer.getInventory().selected = SHOTGUN_SLOT;
+        murderer.connection.send(new ClientboundSetCarriedItemPacket(SHOTGUN_SLOT));
 
-        List<UUID> slotOrder = new ArrayList<>();
-        SimpleContainer container = new SimpleContainer(18);
-        int slot = 0;
+        Component title = Component.literal("TEMBAKAN TERAKHIR").withStyle(ChatFormatting.DARK_RED);
+        Component subtitle = Component.literal("Murderer punya 1 peluru untuk membunuh witness")
+                .withStyle(ChatFormatting.RED);
         for (UUID uuid : GameManager.get().getRegisteredPlayers()) {
-            if (GameManager.get().getRoleAssignments().get(uuid) == Role.forensic_scientist) continue;
-            if (slot >= container.getContainerSize()) break;
+            ServerPlayer p = server.getPlayerList().getPlayer(uuid);
+            if (p == null) continue;
+            p.connection.send(new ClientboundSetTitlesAnimationPacket(10, 60, 10));
+            p.connection.send(new ClientboundSetSubtitleTextPacket(subtitle));
+            p.connection.send(new ClientboundSetTitleTextPacket(title));
+        }
+        murderer.sendSystemMessage(Component.literal("Tembak orang yang kamu yakin witness. Hanya ada 1 peluru, jika salah orang atau meleset, kamu akan ditahan.")
+                .withStyle(ChatFormatting.RED));
+    }
 
-            ServerPlayer online = server.getPlayerList().getPlayer(uuid);
-            GameProfile profile = online != null ? online.getGameProfile() : new GameProfile(uuid, GameManager.get().getPlayerName(uuid));
-            ItemStack head = new ItemStack(Items.PLAYER_HEAD);
-            head.getOrCreateTag().put("SkullOwner", NbtUtils.writeGameProfile(new CompoundTag(), profile));
-            head.setHoverName(Component.literal(GameManager.get().getPlayerName(uuid)));
+    /**
+     * Jejerin semua calon target di depan cluster punya mereka SENDIRI terus
+     * dibekuin. Murderer & accomplice sengaja dilewat (mereka satu tim, gak
+     * ikut jadi sasaran dan tetep bebas gerak); FS dipisah ke depan board
+     * biar gak nyempil di garis tembak.
+     */
+    private void lineUpTargets(MinecraftServer server, UUID murdererUuid) {
+        for (UUID uuid : GameManager.get().getRegisteredPlayers()) {
+            Role role = GameManager.get().getRoleAssignments().get(uuid);
+            if (uuid.equals(murdererUuid) || role == Role.accomplice) continue;
 
-            container.setItem(slot, head);
-            slotOrder.add(uuid);
-            slot++;
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player == null) continue;
+
+            GameManager.LineupSpot spot = role == Role.forensic_scientist
+                    ? GameManager.get().getForensicBoardSpot()
+                    : GameManager.get().getClusterLineupSpot(uuid);
+            if (spot == null) {
+                // Gak punya cluster (harusnya cuma FS, dan FS udah dihandle
+                // di atas) -- tetep dibekuin di tempat dia berdiri sekarang
+                // biar gak ada yang bisa lari-lari selagi yang lain diem.
+                PlayerFreeze.freezeAt(player, player.getX(), player.getY(), player.getZ(), player.getYRot());
+                continue;
+            }
+            PlayerFreeze.freezeAt(player, spot.x(), spot.y(), spot.z(), spot.yaw());
+        }
+    }
+
+    private void tickShootout(MinecraftServer server) {
+        ServerPlayer murderer = server.getPlayerList().getPlayer(shootoutMurdererUuid);
+        if (murderer != null) enforceShotgunSlot(murderer);
+
+        if (shotFired) {
+            // Pelurunya udah melayang -- kalo sampe grace-nya abis gak ada
+            // yang kena (onShootoutHit gak kepanggil), berarti meleset.
+            shotGraceTicks--;
+            if (shotGraceTicks <= 0) {
+                resolveShootout(server, false, "Tembakan murderer meleset. Tim penyelidik menang.");
+            }
+            return;
         }
 
-        NetworkHooks.openScreen(player, new SimpleMenuProvider(
-                (windowId, inv, p) -> new WitnessGuessMenu(windowId, inv, container, slotOrder),
-                Component.literal("Tebak Witness")));
+        if (murderer != null && hasFiredShot(murderer)) {
+            shotFired = true;
+            shotGraceTicks = SHOT_RESOLVE_GRACE_TICKS;
+        }
+    }
+
+    /**
+     * Paku shotgun di slot 1 hotbar -- pola sama persis kayak
+     * enforceBadgeSlot: drop-nya dicegat ItemTossEvent, sisanya (swap ke
+     * offhand pake F, geser lewat GUI inventory) dibenerin di sini tiap tick.
+     */
+    private void enforceShotgunSlot(ServerPlayer murderer) {
+        Inventory inventory = murderer.getInventory();
+        if (ShootoutGun.isShootoutGun(inventory.items.get(SHOTGUN_SLOT))) return;
+
+        // Stack lagi "diangkat" pake kursor di GUI inventory. Pas lagi
+        // diangkat, dia GAK ADA di Inventory manapun (nangkring di menu),
+        // jadi ini HARUS dicek duluan -- kalo kelewat, di bawah bakal
+        // dikira ilang terus dibikinin baru, dan pas kursornya dilepas
+        // jadi dobel.
+        AbstractContainerMenu menu = murderer.containerMenu;
+        if (ShootoutGun.isShootoutGun(menu.getCarried())) {
+            inventory.items.set(SHOTGUN_SLOT, menu.getCarried());
+            menu.setCarried(ItemStack.EMPTY);
+            // Kosongin kursor di layar client juga -- slot -1 di window -1
+            // itu cara vanilla nunjuk "item yang lagi digenggam kursor".
+            murderer.connection.send(new ClientboundContainerSetSlotPacket(
+                    -1, menu.incrementStateId(), -1, ItemStack.EMPTY));
+            return;
+        }
+
+        // Sapu SEMUA slot GUI inventory (kantong, hotbar, offhand, armor,
+        // sampe kotak crafting 2x2 -- yang terakhir ini gak keliatan dari
+        // Inventory.items). PINDAHIN stack yang ketemu, jangan bikin baru:
+        // sisa peluru nempel di NBT stack-nya, bikin baru = peluru gratis.
+        for (Slot slot : murderer.inventoryMenu.slots) {
+            if (ShootoutGun.isShootoutGun(slot.getItem())) {
+                ItemStack gun = slot.getItem();
+                slot.set(ItemStack.EMPTY);
+                inventory.items.set(SHOTGUN_SLOT, gun);
+                murderer.inventoryMenu.broadcastChanges();
+                return;
+            }
+        }
+
+        // Bener-bener gak ada di manapun. Cuma dibikinin baru kalo dia
+        // belom sempet nembak -- kalo udah, jangan, itu bakal ngasih
+        // kesempatan kedua yang gak boleh ada.
+        if (!shotFired) {
+            inventory.items.set(SHOTGUN_SLOT, ShootoutGun.createLoadedShotgun());
+        }
+    }
+
+    /** Pelatuk ke-tarik ke-detect dari sisa peluru shotgun-nya yang abis (lihat ShootoutGun). */
+    private boolean hasFiredShot(ServerPlayer murderer) {
+        ItemStack gun = murderer.getInventory().items.get(SHOTGUN_SLOT);
+        // enforceShotgunSlot udah mastiin posisinya di sini tiap tick.
+        return ShootoutGun.isShootoutGun(gun) && ShootoutGun.getAmmoCount(gun) <= 0;
+    }
+
+    /**
+     * Dipanggil DeceptionMod#onLivingAttack tiap ada player kena serangan
+     * selagi shootout jalan. @return true kalo serangannya harus di-CANCEL.
+     *
+     * Selama fase ini GAK ADA player yang boleh luka -- siapapun korbannya
+     * (peserta maupun yang cuma nonton) dan siapapun penyerangnya. Yang
+     * NGITUNG sebagai tebakan cuma peluru dari murderer. Bedainnya dari
+     * direct entity damage source-nya: kalo yang nyentuh korban itu si
+     * penyerang SENDIRI, berarti dia mukul/nyerang langsung -- bukan
+     * nembak. Peluru bikin direct entity-nya jadi entitas peluru, beda dari
+     * si penembak.
+     */
+    public boolean onShootoutHit(ServerPlayer victim, DamageSource source) {
+        if (!shootoutActive) return false;
+
+        Entity attacker = source.getEntity();
+        Entity direct = source.getDirectEntity();
+        boolean shotByMurderer = attacker != null
+                && attacker.getUUID().equals(shootoutMurdererUuid)
+                && direct != null && direct != attacker;
+        if (!shotByMurderer) {
+            // Pukulan, jatuh, apapun -- gak ngitung, dan gak ngelukain juga.
+            return true;
+        }
+
+        if (!GameManager.get().getRegisteredPlayers().contains(victim.getUUID())) {
+            // Pelurunya nyasar ke orang yang gak ikut main -- gak bisa
+            // dianggap tebakan. Pelurunya tetep abis, jadi biar grace-nya
+            // yang vonis meleset (lihat tickShootout).
+            return true;
+        }
+
+        MinecraftServer server = victim.getServer();
+        if (server == null) return true;
+
+        boolean hitWitness = victim.getUUID().equals(shootoutWitnessUuid);
+        String victimName = GameManager.get().getPlayerName(victim.getUUID());
+        resolveShootout(server, hitWitness, hitWitness
+                ? "Murderer berhasil membunuh " + victimName + " (witness). Pembunuh menang."
+                : "Murderer menembak " + victimName + ", bukan witness. Tim penyelidik menang.");
         return true;
     }
 
-    /** Dipanggil WitnessGuessMenu pas murderer klik salah satu head. */
-    public void onWitnessGuessClicked(ServerPlayer murderer, UUID guessedUuid) {
-        if (!shootoutActive || !murderer.getUUID().equals(shootoutMurdererUuid)) return;
-
+    /**
+     * Satu-satunya jalan keluar fase shootout: lepasin bekuan + senjata dulu
+     * (aman dipanggil dari tengah event entitas, cuma ngurusin inventory &
+     * packet), baru antri-in hasil game-nya lewat queueEndGame.
+     */
+    private void resolveShootout(MinecraftServer server, boolean murdererWon, String message) {
         shootoutActive = false;
-        murderer.closeContainer();
-        boolean guessedWitness = guessedUuid.equals(shootoutWitnessUuid);
+        shotFired = false;
+        shotGraceTicks = 0;
 
-        if (guessedWitness) {
-            queueEndGame(Component.literal("PENJAHAT MENANG!").withStyle(ChatFormatting.DARK_RED),
-                    Component.literal("Murderer berhasil nebak witness. Penjahat menang.").withStyle(ChatFormatting.RED), true);
-        } else {
-            queueEndGame(Component.literal("TIM PENYELIDIK MENANG!").withStyle(ChatFormatting.GREEN),
-                    Component.literal("Murderer salah nebak witness. Tim penyelidik menang.").withStyle(ChatFormatting.GREEN), false);
+        PlayerFreeze.unfreezeAll(server);
+
+        ServerPlayer murderer = server.getPlayerList().getPlayer(shootoutMurdererUuid);
+        if (murderer != null) {
+            Inventory inventory = murderer.getInventory();
+            for (int i = 0; i < inventory.items.size(); i++) {
+                if (ShootoutGun.isShootoutGun(inventory.items.get(i))) {
+                    inventory.items.set(i, ItemStack.EMPTY);
+                }
+            }
+            if (ShootoutGun.isShootoutGun(inventory.offhand.get(0))) {
+                inventory.offhand.set(0, ItemStack.EMPTY);
+            }
         }
+
+        GameManager.get().broadcastActionBarToAll(Component.empty());
+        queueEndGame(
+                murdererWon
+                        ? Component.literal("PENJAHAT MENANG!").withStyle(ChatFormatting.DARK_RED)
+                        : Component.literal("TIM PENYELIDIK MENANG!").withStyle(ChatFormatting.GREEN),
+                Component.literal(message).withStyle(murdererWon ? ChatFormatting.RED : ChatFormatting.GREEN),
+                murdererWon);
     }
 
     /** Fallback: ronde 3 abis tanpa ada confession yang berhasil -- penjahat langsung menang. */
@@ -570,6 +876,21 @@ public class PresentationManager {
         presentasiOrder = order;
         presentasiIndex = 0;
         presentasiTicksLeft = presentasiTurnTicks;
+
+        Component title = Component.literal("Presentasi Ronde " + round + " dimulai").withStyle(ChatFormatting.GREEN);
+        GameManager.get().broadcast(server, Component.literal(""));
+        GameManager.get().broadcast(server, Component.literal("  PRESENTASI DIMULAI").withStyle(ChatFormatting.GREEN));
+        GameManager.get().broadcast(server, Component.literal("").withStyle(ChatFormatting.WHITE));
+        GameManager.get().broadcast(server, Component.literal("  Jelaskan apa yang kamu dapat dari diskusi sebelumnya, \n  selama presentasi tidak ada yang boleh menyela.").withStyle(ChatFormatting.WHITE));
+        for (UUID uuid : GameManager.get().getRegisteredPlayers()) {
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player == null) continue;
+
+            player.connection.send(new ClientboundSetTitlesAnimationPacket(10, 40, 10));
+            player.connection.send(new ClientboundSetSubtitleTextPacket(Component.empty()));
+            player.connection.send(new ClientboundSetTitleTextPacket(title));
+        }
+
         if (!presentasiOrder.isEmpty()) {
             broadcastSpeakerActionBar();
         }
@@ -600,7 +921,7 @@ public class PresentationManager {
         String name = GameManager.get().getPlayerName(speaker);
         int secondsLeft = (int) Math.ceil(presentasiTicksLeft / 20.0);
         Component actionBar = Component.literal("Giliran " + name + " berbicara | " + secondsLeft + "s")
-                .withStyle(ChatFormatting.AQUA);
+                .withStyle(ChatFormatting.YELLOW);
         GameManager.get().broadcastActionBarToAll(actionBar);
     }
 
@@ -677,6 +998,20 @@ public class PresentationManager {
         fsPlayer.getInventory().add(remover);
     }
 
+    /**
+     * Perkakas jatah Forensic Scientist yang gak boleh lepas dari tangannya:
+     * investigation paper & penghapus scene tile. Dipake DeceptionMod#onItemToss
+     * buat nolak drop -- kalo kebuang, ronde itu macet total soalnya gak ada
+     * cara lain buat ngasih paper/penghapus pengganti.
+     *
+     * <p>Penghapusnya dicek lewat NBT, BUKAN cuma tipe item -- flint & steel
+     * biasa punya siapa pun harus tetep bisa dibuang.
+     */
+    public boolean isForensicTool(ItemStack stack) {
+        return !stack.isEmpty()
+                && (stack.getItem() == ModItems.INVESTIGATION_PAPER.get() || isTileRemover(stack));
+    }
+
     private boolean isTileRemover(ItemStack stack) {
         return !stack.isEmpty() && stack.getItem() == Items.FLINT_AND_STEEL
                 && stack.getTag() != null && stack.getTag().getBoolean(TILE_REMOVER_TAG);
@@ -692,21 +1027,21 @@ public class PresentationManager {
         if (!isTileRemover(heldItem)) return false;
 
         if (round <= 1 || roundTileRemoved) {
-            player.sendSystemMessage(Component.literal("Gak ada scene tile yang perlu dihapus sekarang.").withStyle(ChatFormatting.RED));
+            player.sendSystemMessage(Component.literal("Tidak ada scene tile yang perlu dihapus sekarang.").withStyle(ChatFormatting.RED));
             return true;
         }
 
         if (!level.getBlockState(pos).is(ModBlocks.INVESTIGATION_PAPER.get())
                 || !(level.getBlockEntity(pos) instanceof InvestigationPaperBlockEntity paperEntity)
                 || paperEntity.getCategory().isEmpty()) {
-            player.sendSystemMessage(Component.literal("Cuma bisa dipake ke scene tile yang udah ditempel.").withStyle(ChatFormatting.RED));
+            player.sendSystemMessage(Component.literal("Hanya bisa dipakai ke scene tile yang sudah ditempel.").withStyle(ChatFormatting.RED));
             return true;
         }
 
         String category = paperEntity.getCategory();
         if (category.equals(ForensicPaperData.CAUSE_OF_DEATH.displayName())
                 || category.equals(ForensicPaperData.LOCATION_OF_CRIME.displayName())) {
-            player.sendSystemMessage(Component.literal("Penyebab kematian & lokasi kejadian gak bisa dihapus.").withStyle(ChatFormatting.RED));
+            player.sendSystemMessage(Component.literal("Penyebab kematian & lokasi kejadian tidak bisa dihapus.").withStyle(ChatFormatting.RED));
             return true;
         }
 
@@ -714,11 +1049,21 @@ public class PresentationManager {
         heldItem.shrink(1);
         roundTileRemoved = true;
         unlockPendingPaper(player);
-        player.sendSystemMessage(Component.literal("Scene tile \"" + category + "\" dihapus. Sekarang naro clue baru kamu.").withStyle(ChatFormatting.GREEN));
+        player.sendSystemMessage(Component.literal("Scene tile \"" + category + "\" telah dihapus. Sekarang taruh petunjuk baru untuk investigator.").withStyle(ChatFormatting.GREEN));
         return true;
     }
 
-    /** Cabut NBT PLACEMENT_LOCKED_TAG dari paper ronde ini yang masih di inventory FS, biar bisa ditempel. */
+    /**
+     * Cabut NBT PLACEMENT_LOCKED_TAG dari paper ronde ini yang masih di
+     * inventory FS, biar bisa ditempel.
+     *
+     * <p>Yang dikunci CUMA paper jatah ronde ini (lihat
+     * giveRoundPaperAndRemover) -- sisa paper ronde 1 yang gak jadi ditempel
+     * sengaja dibiarin bebas. Kalo semuanya ikut dikunci, FS bisa mentok
+     * total: penyebab kematian & lokasi kejadian gak boleh dihapus (lihat
+     * tryRemoveTile), jadi kalo cuma itu yang kepasang, gak ada tile yang
+     * bisa dihapus buat mbuka kuncinya.
+     */
     private void unlockPendingPaper(ServerPlayer fsPlayer) {
         for (ItemStack stack : fsPlayer.getInventory().items) {
             if (stack.getItem() == ModItems.INVESTIGATION_PAPER.get()

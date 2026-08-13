@@ -1,0 +1,11 @@
+{
+  "providers": [
+    {
+      "type": "bitmap",
+      "file": "deception:font/discord.png",
+      "ascent": 6,
+      "height": 8,
+      "chars": ["\uE000"]
+    }
+  ]
+}

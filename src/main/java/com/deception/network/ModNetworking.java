@@ -5,12 +5,14 @@ import java.util.UUID;
 
 import com.deception.DeceptionMod;
 import com.deception.game.GameManager;
+import com.deception.game.SettingSnapshot;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.network.simple.SimpleChannel;
@@ -60,6 +62,34 @@ public class ModNetworking {
                 PoliceBadgeHolderPacket::encode,
                 PoliceBadgeHolderPacket::decode,
                 PoliceBadgeHolderPacket::handle);
+        CHANNEL.registerMessage(packetId++, PoliceBadgeUsePacket.class,
+                PoliceBadgeUsePacket::encode,
+                PoliceBadgeUsePacket::decode,
+                PoliceBadgeUsePacket::handle);
+        CHANNEL.registerMessage(packetId++, SettingSyncPacket.class,
+                SettingSyncPacket::encode,
+                SettingSyncPacket::decode,
+                SettingSyncPacket::handle);
+        CHANNEL.registerMessage(packetId++, SettingActionPacket.class,
+                SettingActionPacket::encode,
+                SettingActionPacket::decode,
+                SettingActionPacket::handle);
+        CHANNEL.registerMessage(packetId++, OpenRoleInfoPacket.class,
+                OpenRoleInfoPacket::encode,
+                OpenRoleInfoPacket::decode,
+                OpenRoleInfoPacket::handle);
+        CHANNEL.registerMessage(packetId++, MovementLockPacket.class,
+                MovementLockPacket::encode,
+                MovementLockPacket::decode,
+                MovementLockPacket::handle);
+        CHANNEL.registerMessage(packetId++, MurderResultHudPacket.class,
+                MurderResultHudPacket::encode,
+                MurderResultHudPacket::decode,
+                MurderResultHudPacket::handle);
+        CHANNEL.registerMessage(packetId++, RoleVisibleHudPacket.class,
+                RoleVisibleHudPacket::encode,
+                RoleVisibleHudPacket::decode,
+                RoleVisibleHudPacket::handle);
     }
 
     public static void sendBlindfoldState(ServerPlayer player, boolean closing) {
@@ -99,5 +129,52 @@ public class ModNetworking {
 
     public static void broadcastPoliceBadgeHolder(UUID uuid, boolean hasBadge) {
         CHANNEL.send(PacketDistributor.ALL.noArg(), new PoliceBadgeHolderPacket(uuid, hasBadge));
+    }
+
+    /** Sinkron ulang icon badge ke SATU client -- dipake pas rejoin, lihat PresentationManager#onPlayerRejoined. */
+    public static void sendPoliceBadgeHolder(ServerPlayer player, UUID uuid, boolean hasBadge) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new PoliceBadgeHolderPacket(uuid, hasBadge));
+    }
+
+    /** Animasi pop badge di SEMUA layar -- lihat javadoc PoliceBadgeUsePacket. */
+    public static void broadcastPoliceBadgeUse(UUID uuid) {
+        CHANNEL.send(PacketDistributor.ALL.noArg(), new PoliceBadgeUsePacket(uuid));
+    }
+
+    /** Buka GUI /deception setting di client, sekalian kirim kondisi awalnya. */
+    public static void sendOpenSetting(ServerPlayer player) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new SettingSyncPacket(SettingSnapshot.capture(), true));
+    }
+
+    /** Kirim kondisi terbaru ke GUI yang lagi kebuka (tanpa buka ulang). */
+    public static void sendSettingState(ServerPlayer player) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new SettingSyncPacket(SettingSnapshot.capture(), false));
+    }
+
+    /** Kunci/lepas input gerak player ini -- lihat game/PlayerFreeze. */
+    public static void sendMovementLock(ServerPlayer player, boolean locked) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new MovementLockPacket(locked));
+    }
+
+    /** Buka GUI /deception inforole di client. */
+    public static void sendOpenRoleInfo(ServerPlayer player) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new OpenRoleInfoPacket());
+    }
+
+    /** Tempel hasil malam (means & clue pilihan murderer) di HUD-nya FS. */
+    public static void sendMurderResultHud(ServerPlayer player, ItemStack means, ItemStack clue) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new MurderResultHudPacket(means, clue));
+    }
+
+    /** Copot HUD hasil malam dari layar player ini (dipanggil pas game selesai). */
+    public static void clearMurderResultHud(ServerPlayer player) {
+        sendMurderResultHud(player, ItemStack.EMPTY, ItemStack.EMPTY);
+    }
+
+    /** HUD role sendiri di pojok kanan atas -- lihat GameManager#sendRoleVisibleHud. */
+    public static void sendRoleVisibleHud(ServerPlayer player, RoleVisibleHudPacket packet) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
     }
 }

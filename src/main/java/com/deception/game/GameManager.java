@@ -353,6 +353,47 @@ public class GameManager {
         this.discussTimerSeconds = DEFAULT_DISCUSS_TIMER_SECONDS;
     }
 
+    // ---------- Role visible (HUD role sendiri di pojok kanan atas) ----------
+    // SENGAJA gak direset di abortGame: ini setting server, bukan state game
+    // -- sama kayak discussTimerSeconds, sekali diatur ya kepake terus sampe
+    // diubah lagi.
+    private boolean roleVisible = true;
+
+    public boolean isRoleVisible() {
+        return roleVisible;
+    }
+
+    /** Nyalain/matiin HUD role, sekalian langsung nerapin ke layar semua peserta. */
+    public void setRoleVisible(MinecraftServer server, boolean visible) {
+        this.roleVisible = visible;
+        syncRoleVisibleHudToAll(server);
+    }
+
+    /** Kirim ulang HUD role ke SEMUA peserta yang online -- dipake pas toggle & pas role kelar dibagi. */
+    public void syncRoleVisibleHudToAll(MinecraftServer server) {
+        if (server == null) return;
+        for (UUID uuid : registeredPlayers) {
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player != null) sendRoleVisibleHud(player);
+        }
+    }
+
+    /**
+     * Kirim HUD role ke SATU player. Otomatis ngirim perintah clear kalo
+     * fiturnya lagi mati / dia belum kebagian role, jadi caller gak perlu
+     * ngecek apa-apa.
+     */
+    public void sendRoleVisibleHud(ServerPlayer player) {
+        Role role = roleAssignments.get(player.getUUID());
+        if (!roleVisible || role == null) {
+            com.deception.network.ModNetworking.sendRoleVisibleHud(player,
+                    com.deception.network.RoleVisibleHudPacket.hidden());
+            return;
+        }
+        com.deception.network.ModNetworking.sendRoleVisibleHud(player,
+                new com.deception.network.RoleVisibleHudPacket(true, role.getDisplayName(), isMurdererTeam(role)));
+    }
+
     public int getOfflineRevealSeconds() {
         return LEAVE_TIMEOUT_TICKS / 20;
     }
@@ -488,16 +529,24 @@ public class GameManager {
     /** Reveal semua role ke chat pas game selesai -- dipanggil endGameWithResult SEBELUM abortGame ngosongin roleAssignments. */
     private void revealAllRoles(MinecraftServer server) {
         server.getPlayerList().broadcastSystemMessage(
-                Component.literal("=== Role Terungkap ===").withStyle(ChatFormatting.GOLD), false);
+                Component.literal(" \n===== List Role =====").withStyle(ChatFormatting.GOLD), false);
+                Component.literal("");
         for (UUID uuid : registeredPlayers) {
             Role role = roleAssignments.get(uuid);
             if (role == null) continue;
             server.getPlayerList().broadcastSystemMessage(
-                    Component.literal(getPlayerName(uuid) + ": " + role.getDisplayName()).withStyle(ChatFormatting.AQUA), false);
+                    Component.literal("  " + getPlayerName(uuid) + ": " + role.getDisplayName()).withStyle(ChatFormatting.WHITE), false);
         }
     }
 
     private void abortGame(MinecraftServer server, Component reason) {
+        // Disalin DULUAN: field aslinya di-null-in di bawah (bagian reset
+        // state), padahal restore backing-nya baru jalan setelah itu -- kalo
+        // baca langsung dari field-nya, yang kebaca selalu null dan
+        // restoreBacking gak pernah kepanggil.
+        BlockPos selectedMeansBacking = this.murdererSelectedMeansBacking;
+        BlockPos selectedClueBacking = this.murdererSelectedClueBacking;
+
         this.state = State.IDLE;
         this.roleAssignments.clear();
         this.countdownTicks = 0;
@@ -539,11 +588,11 @@ public class GameManager {
             }
 
             ServerLevel level = target.overworld();
-            if (murdererSelectedMeansBacking != null) {
-                restoreBacking(level, murdererSelectedMeansBacking);
+            if (selectedMeansBacking != null) {
+                restoreBacking(level, selectedMeansBacking);
             }
-            if (murdererSelectedClueBacking != null) {
-                restoreBacking(level, murdererSelectedClueBacking);
+            if (selectedClueBacking != null) {
+                restoreBacking(level, selectedClueBacking);
             }
 
             restoreArena(target);
@@ -561,6 +610,16 @@ public class GameManager {
 
                     // FORCE CLOSE - langsung ilang tanpa animasi
                     com.deception.network.ModNetworking.sendForceCloseBlindfold(player);
+
+                    // Copot HUD hasil malam-nya FS. Dikirim ke SEMUA player
+                    // (bukan cuma yang FS ronde ini) -- murah, dan bikin
+                    // layar orang yang pernah jadi FS di game sebelumnya
+                    // ikut bersih.
+                    com.deception.network.ModNetworking.clearMurderResultHud(player);
+
+                    // Role udah dikosongin di atas, jadi ini otomatis ngirim
+                    // clear -- HUD role gak boleh nyangkut abis game selesai.
+                    sendRoleVisibleHud(player);
 
                     // Clear semua title dan actionbar
                     player.connection.send(new ClientboundSetTitlesAnimationPacket(0, 0, 0));
@@ -594,10 +653,31 @@ public class GameManager {
                 entity.discard();
             }
         }
-        for (Entity entity : level.getEntities().getAll()) {
-            if (entity.getTags().contains("deception_display")) {
+        // Text display-nya investigation paper GAK ikut kecatet di
+        // spawnedHeadEntities (cuma di investigationPaperTextByPos), jadi
+        // dibersihin lewat map-nya sendiri -- lookup by UUID, gak nyentuh
+        // koleksi entitas level.
+        for (UUID textId : investigationPaperTextByPos.values()) {
+            var entity = level.getEntity(textId);
+            if (entity != null) {
                 entity.discard();
             }
+        }
+        // Sapu sisa display yang UUID-nya gak kecatet di dua map di atas
+        // (misal sisa game yang kepotong crash). KUMPULIN DULU baru discard:
+        // getAll() itu VIEW LANGSUNG ke map entitas level-nya (EntityLookup
+        // #byId), dan discard() ujung-ujungnya manggil remove() di map yang
+        // sama persis. Map-nya fastutil, gak fail-fast -- jadi gak bakal
+        // error, iteratornya cuma nyasar di linked-list yang udah berubah
+        // dan sebagian entitas kelewat gak kehapus.
+        List<Entity> strayDisplays = new ArrayList<>();
+        for (Entity entity : level.getEntities().getAll()) {
+            if (entity.getTags().contains("deception_display")) {
+                strayDisplays.add(entity);
+            }
+        }
+        for (Entity entity : strayDisplays) {
+            entity.discard();
         }
         spawnedHeadEntities.clear();
         headPlacementByOwner.clear();
@@ -608,7 +688,7 @@ public class GameManager {
         pendingForensicPaperCategories = null;
         forensicPapersGivenThisRound = false;
         investigationPaperTextByPos.clear();
-        PresentationManager.get().reset();
+        PresentationManager.get().reset(server);
 
         resetArenaBlocks(level);
         resetForensicBoard(level);
@@ -647,6 +727,56 @@ public class GameManager {
                 level.setBlock(cluePos.relative(backingDir), deepslateTiles, 3);
             }
         }
+    }
+
+    // ---------- Titik baris-berbaris fase shootout ----------
+    // Dipake PresentationManager#startWitnessShootout: semua calon target
+    // dijejerin di depan cluster-nya MASING-MASING (jadi kebaca siapa
+    // siapa, tapi murderer tetep gak tau yang mana witness-nya), FS dipisah
+    // ke depan board biar gak ikut kena garis tembak.
+
+    /** Jarak berdiri dari muka dinding cluster -- cukup maju biar badannya gak nempel/nembus dinding. */
+    private static final double LINEUP_DISTANCE_FROM_WALL = 2.5;
+
+    /** Satu titik berdiri + arah hadap. Yaw-nya bikin playernya ngadep ke tengah arena (ke arah murderer). */
+    public record LineupSpot(double x, double y, double z, float yaw) {}
+
+    /**
+     * Titik berdiri di depan cluster punya {@code ownerUuid}. Null kalo dia
+     * gak punya cluster sama sekali (FS, atau player yang offline pas arena
+     * dibangun) -- caller yang mutusin fallback-nya.
+     */
+    public LineupSpot getClusterLineupSpot(UUID ownerUuid) {
+        HeadPlacement placement = headPlacementByOwner.get(ownerUuid);
+        if (placement == null) return null;
+
+        WallSpec wall = placement.wall();
+        // Sejajar sama titik kepala owner-nya (lihat spawnOwnerHead), biar
+        // dia beneran berdiri persis di depan cluster punya dia sendiri.
+        double alongWall = wall.center() + placement.columns()[0] + CLUSTER_WIDTH / 2.0;
+
+        Direction backingDir = wall.facing().getOpposite();
+        int backingStep = wall.alongX() ? backingDir.getStepZ() : backingDir.getStepX();
+        int facingStep = -backingStep;
+        // Muka dinding: kalo backing-nya ke arah koordinat NAIK, muka blok-nya
+        // ada di sisi fixedCoord+1; kalo backing-nya ke arah TURUN, di fixedCoord.
+        double wallFace = wall.fixedCoord() + Math.max(backingStep, 0);
+        double awayFromWall = wallFace + facingStep * LINEUP_DISTANCE_FROM_WALL;
+
+        double x = wall.alongX() ? alongWall : awayFromWall;
+        double z = wall.alongX() ? awayFromWall : alongWall;
+        return new LineupSpot(x, ARENA_TELEPORT_POS.getY(), z, wall.facing().toYRot());
+    }
+
+    /**
+     * Titik berdiri FS: di depan board, ngadep board (arah -X, board-nya ada
+     * di sisi barat arena). Sengaja dipisah jauh dari barisan cluster biar FS
+     * gak kena peluru nyasar.
+     */
+    public LineupSpot getForensicBoardSpot() {
+        double x = FORENSIC_BOARD_MAX.getX() + 3.5;
+        double z = (FORENSIC_BOARD_MIN.getZ() + FORENSIC_BOARD_MAX.getZ() + 1) / 2.0;
+        return new LineupSpot(x, ARENA_TELEPORT_POS.getY(), z, Direction.WEST.toYRot());
     }
 
     private AABB computeArenaBounds() {
@@ -836,13 +966,18 @@ public class GameManager {
                         .withStyle(ChatFormatting.YELLOW);
                 sendTitle(player, title, subtitle, 5, 50, 15);
                 playSoundTo(player, SoundEvents.UI_TOAST_CHALLENGE_COMPLETE, SoundSource.MASTER, 3.0F, 1.0F);
-
-                player.sendSystemMessage(Component.literal("Peran kamu adalah: " + entry.getValue().getDisplayName())
+                player.sendSystemMessage(Component.literal(""));
+                player.sendSystemMessage(Component.literal("  Peran kamu adalah: " + entry.getValue().getDisplayName())
                         .withStyle(ChatFormatting.GOLD));
+                player.sendSystemMessage(Component.literal(""));
                 player.sendSystemMessage(Component.literal(RoleDescriptions.get(entry.getValue()))
-                        .withStyle(ChatFormatting.GRAY));
+                        .withStyle(ChatFormatting.WHITE));
             }
         }
+
+        // Role baru kebagi -- baru sekarang HUD-nya ada isinya (lihat
+        // sendRoleVisibleHud; sebelum ini dia cuma bakal ngirim clear).
+        syncRoleVisibleHudToAll(server);
     }
 
     private static final int NIGHT_PRECLOSE_DELAY = 60;
@@ -1013,8 +1148,21 @@ public class GameManager {
         if (nightTicksElapsed >= nightDoneAt && nightDoneAt != Integer.MAX_VALUE) {
             state = State.DISCUSS;
             discussTicksLeft = discussTimerSeconds * 20;
-            broadcast(serverRef, Component.literal("Diskusi dimulai.").withStyle(ChatFormatting.GREEN));
-        }
+            broadcast(serverRef, Component.literal("═══════════════════════").withStyle(ChatFormatting.GOLD));
+            broadcast(serverRef, Component.literal(""));
+            broadcast(serverRef, Component.literal("  🔪 GAME DIMULAI 🔪").withStyle(ChatFormatting.GREEN));
+            broadcast(serverRef, Component.literal("  Cari & tangkap pembunuh misterius itu, \n  bawa saksi mata untuk melapor.").withStyle(ChatFormatting.YELLOW));
+            broadcast(serverRef, Component.literal("  ").append(discordIcon()).append(Component.literal(" @aflahall").withStyle(ChatFormatting.AQUA)).append(Component.literal(" Dev Of ").withStyle(ChatFormatting.WHITE).append(Component.literal("@corazonid").withStyle(ChatFormatting.AQUA))));
+            broadcast(serverRef, Component.literal(""));
+            broadcast(serverRef, Component.literal("═══════════════════════").withStyle(ChatFormatting.GOLD));
+            // broadcast(Component.text(" "));
+            // broadcast(Component.text("  🤫 GAME DIMULAI 🤫", NamedTextColor.GREEN).decorate(TextDecoration.BOLD));
+            // broadcast(Component.text("  Jaga & bantu merlin mendapatkan 3 tanaman untuk menang!", NamedTextColor.YELLOW));
+            // broadcast(Component.text("  Jangan biarkan kubu jahat menggagalkan misi!", NamedTextColor.RED));
+            // broadcast(Component.text("  Plugin By ", NamedTextColor.GREEN).append(Component.text("Aflahal", NamedTextColor.WHITE).decorate(TextDecoration.BOLD)));
+            // broadcast(Component.text(" "));
+            // broadcast(Component.text("═══════════════════════", NamedTextColor.GOLD));
+            }
     }
 
     private void putBlindfold(ServerPlayer player) {
@@ -1104,6 +1252,26 @@ public class GameManager {
         return true;
     }
 
+    /**
+     * Tempel means & clue pilihan murderer di HUD-nya FS (lihat
+     * init/MurderResultOverlay). Item-nya dibaca ulang dari block yang masih
+     * nempel di dinding -- yang diganti pas dipilih cuma backing-nya, block
+     * clue-nya sendiri gak keganggu.
+     */
+    private void sendMurderResultHud(ServerPlayer fsPlayer) {
+        ServerLevel level = serverRef.overworld();
+        com.deception.network.ModNetworking.sendMurderResultHud(fsPlayer,
+                clueStackAt(level, murdererSelectedMeansPos),
+                clueStackAt(level, murdererSelectedCluePos));
+    }
+
+    private ItemStack clueStackAt(ServerLevel level, BlockPos pos) {
+        if (pos == null) return ItemStack.EMPTY;
+        BlockState state = level.getBlockState(pos);
+        if (!(state.getBlock() instanceof ClueBlock)) return ItemStack.EMPTY;
+        return new ItemStack(state.getBlock().asItem());
+    }
+
     private String getItemName(ServerLevel level, BlockPos pos) {
         BlockState state = level.getBlockState(pos);
         if (state.getBlock() instanceof ClueBlock) {
@@ -1171,11 +1339,11 @@ public class GameManager {
 
             finalizeWitnessConfirm();
 
-            player.sendSystemMessage(Component.literal("Konfirmasi diterima!").withStyle(ChatFormatting.GREEN));
+            player.sendSystemMessage(Component.literal("Berhasil konfirmasi!").withStyle(ChatFormatting.GREEN));
             return true;
         }
 
-        player.sendSystemMessage(Component.literal("Gak ada yang perlu dikonfirmasi sekarang.").withStyle(ChatFormatting.RED));
+        player.sendSystemMessage(Component.literal("Tidak ada yang perlu dikonfirmasi sekarang.").withStyle(ChatFormatting.RED));
         return true;
     }
 
@@ -1312,8 +1480,11 @@ public class GameManager {
         if (fsUuid != null) {
             ServerPlayer fsPlayer = serverRef.getPlayerList().getPlayer(fsUuid);
             if (fsPlayer != null) {
-                fsPlayer.sendSystemMessage(Component.literal("=== Hasil Malam ===").withStyle(ChatFormatting.GOLD));
-                for (Component line : buildFsResultLines()) fsPlayer.sendSystemMessage(line);
+                fsPlayer.sendSystemMessage(Component.literal(""));
+                fsPlayer.sendSystemMessage(Component.literal("===== Hasil Malam =====").withStyle(ChatFormatting.GOLD));
+                fsPlayer.sendSystemMessage(Component.literal(""));
+                for (Component line : buildFsResultMurder()) fsPlayer.sendSystemMessage(line);
+                sendMurderResultHud(fsPlayer);
             }
         }
 
@@ -1401,6 +1572,21 @@ public class GameManager {
             leftWitnessName = "";
         }
 
+        UUID fsUuid = null;
+        for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
+            if (e.getValue() == Role.forensic_scientist) { fsUuid = e.getKey(); break; }
+        }
+
+        if (fsUuid != null) {
+            ServerPlayer fsPlayer = serverRef.getPlayerList().getPlayer(fsUuid);
+            if (fsPlayer != null) {
+                fsPlayer.sendSystemMessage(Component.literal(""));
+                fsPlayer.sendSystemMessage(Component.literal("===== Hasil Malam =====").withStyle(ChatFormatting.GOLD));
+                fsPlayer.sendSystemMessage(Component.literal(""));
+                for (Component line : buildFsResultLines()) fsPlayer.sendSystemMessage(line);
+            }
+        }
+
         for (UUID kUuid : nightKillers) {
             ServerPlayer kp = serverRef.getPlayerList().getPlayer(kUuid);
             if (kp != null) removeGlow(kp);
@@ -1425,6 +1611,26 @@ public class GameManager {
 
     // ---------- Baris pesan hasil malam, dipake pas konfirmasi & pas rejoin ----------
 
+    private List<Component> buildFsResultMurder() {
+        List<Component> lines = new ArrayList<>();
+        ServerLevel level = serverRef.overworld();
+        String meansName = murdererSelectedMeansPos != null ? getItemName(level, murdererSelectedMeansPos) : "?";
+        String clueName = murdererSelectedCluePos != null ? getItemName(level, murdererSelectedCluePos) : "?";
+
+        String murdererName = "-";
+        List<String> accompliceNames = new ArrayList<>();
+        for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
+            if (e.getValue() == Role.murderer) murdererName = getPlayerName(e.getKey());
+            else if (e.getValue() == Role.accomplice) accompliceNames.add(getPlayerName(e.getKey()));
+        }
+
+        lines.add(Component.literal("  Murderer: " + murdererName).withStyle(ChatFormatting.RED));
+        lines.add(Component.literal("  Accomplice: " + (accompliceNames.isEmpty() ? "-" : String.join(", ", accompliceNames))).withStyle(ChatFormatting.RED));
+        lines.add(Component.literal("  " + meansName).withStyle(ChatFormatting.WHITE));
+        lines.add(Component.literal("  " + clueName).withStyle(ChatFormatting.WHITE));
+        return lines;
+    }
+
     private List<Component> buildFsResultLines() {
         List<Component> lines = new ArrayList<>();
         ServerLevel level = serverRef.overworld();
@@ -1439,11 +1645,11 @@ public class GameManager {
         }
         String witnessName = nightWitnessUuid != null ? getPlayerName(nightWitnessUuid) : "-";
 
-        lines.add(Component.literal("Murderer: " + murdererName).withStyle(ChatFormatting.RED));
-        lines.add(Component.literal("Accomplice: " + (accompliceNames.isEmpty() ? "-" : String.join(", ", accompliceNames))).withStyle(ChatFormatting.RED));
-        lines.add(Component.literal("Witness: " + witnessName).withStyle(ChatFormatting.AQUA));
-        lines.add(Component.literal(meansName).withStyle(ChatFormatting.GRAY));
-        lines.add(Component.literal(clueName).withStyle(ChatFormatting.GRAY));
+        lines.add(Component.literal("  Murderer: " + murdererName).withStyle(ChatFormatting.RED));
+        lines.add(Component.literal("  Accomplice: " + (accompliceNames.isEmpty() ? "-" : String.join(", ", accompliceNames))).withStyle(ChatFormatting.RED));
+        lines.add(Component.literal("  Witness: " + witnessName).withStyle(ChatFormatting.AQUA));
+        lines.add(Component.literal("  " + meansName).withStyle(ChatFormatting.WHITE));
+        lines.add(Component.literal("  " + clueName).withStyle(ChatFormatting.WHITE));
         return lines;
     }
 
@@ -1456,9 +1662,9 @@ public class GameManager {
         List<String> killerNames = new ArrayList<>();
         for (UUID k : nightKillers) killerNames.add(getPlayerName(k));
 
-        lines.add(Component.literal("Murderer & Accomplice: " + String.join(", ", killerNames)).withStyle(ChatFormatting.RED));
-        lines.add(Component.literal(meansName).withStyle(ChatFormatting.GRAY));
-        lines.add(Component.literal(clueName).withStyle(ChatFormatting.GRAY));
+        lines.add(Component.literal("  Murderer & Accomplice: " + String.join(", ", killerNames)).withStyle(ChatFormatting.RED));
+        lines.add(Component.literal("  " + meansName).withStyle(ChatFormatting.GRAY));
+        lines.add(Component.literal("  " + clueName).withStyle(ChatFormatting.GRAY));
         return lines;
     }
 
@@ -1468,7 +1674,7 @@ public class GameManager {
     private Component buildWitnessResultLine() {
         List<String> killerNames = new ArrayList<>();
         for (UUID k : nightKillers) killerNames.add(getPlayerName(k));
-        return Component.literal("Yang kamu lihat tadi: " + String.join(", ", killerNames)).withStyle(ChatFormatting.AQUA);
+        return Component.literal("  Orang yang terlibat: " + String.join(", ", killerNames)).withStyle(ChatFormatting.RED);
     }
 
     private void restoreBacking(ServerLevel level, BlockPos pos) {
@@ -1514,7 +1720,7 @@ public class GameManager {
     // gak keburu fade vanilla) sepanjang fase diskusi.
     private void broadcastForensicWaitActionBar() {
         int dotCount = (int) ((globalTickCounter / 10) % 4);
-        Component actionBar = Component.literal("Menunggu forensic scientist memberi clue" + ".".repeat(dotCount))
+        Component actionBar = Component.literal("Menunggu forensic scientist memberi petunjuk" + ".".repeat(dotCount))
                 .withStyle(ChatFormatting.YELLOW);
         broadcastActionBarToAll(actionBar);
     }
@@ -1689,7 +1895,7 @@ public class GameManager {
                             .append(skipRevealPrompt());
                     notifyRole(Role.forensic_scientist, fsMsg);
 
-                    Component accMsg = Component.literal(name + " (Murderer) keluar server. Item bakal dipilih otomatis dalam " + getOfflineRevealSeconds() + " detik kalo gak balik.")
+                    Component accMsg = Component.literal(name + " (Murderer) keluar server. Item bakal dipilih otomatis dalam " + getOfflineRevealSeconds() + " detik.")
                             .withStyle(ChatFormatting.RED);
                     notifyRole(Role.accomplice, accMsg);
 
@@ -1768,7 +1974,7 @@ public class GameManager {
     // nyebut role spesifik (Murderer/Accomplice), cuma nama pemainnya --
     // biar gak bocorin identitas orang jahat ke witness.
     private void notifyWitnessKillerLeft(String name) {
-        notifyRole(Role.witness, Component.literal(name + " orang jahat telah keluar").withStyle(ChatFormatting.RED));
+        notifyRole(Role.witness, Component.literal(name + " orang yang terlibat telah keluar server").withStyle(ChatFormatting.RED));
     }
 
     // Nempel di pesan "X keluar server" yang dikirim ke Forensic
@@ -1782,8 +1988,8 @@ public class GameManager {
                         .withUnderlined(true)
                         .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/deception skipreveal"))
                         .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                                Component.literal("Klik buat skip reveal ini"))));
-        return Component.literal(" Klik skip untuk skip reveal ini ").withStyle(ChatFormatting.GRAY).append(button);
+                                Component.literal("Klik untuk skip reveal ini"))));
+        return Component.literal("\n Terlalu lama? ").withStyle(ChatFormatting.GRAY).append(button);
     }
 
     public void onPlayerRejoined(MinecraftServer server, ServerPlayer player) {
@@ -1798,6 +2004,8 @@ public class GameManager {
         syncActionBar(player);
         syncTitle(player, uuid, role);
         syncGlowEffect(player, uuid, role);
+        // HUD role itu state client-only, ke-reset pas dia disconnect.
+        sendRoleVisibleHud(player);
 
         // Timer auto-pick/auto-skip gak berlaku lagi kalo yang ditunggu udah balik
         if (role == Role.murderer) {
@@ -1828,6 +2036,12 @@ public class GameManager {
         if (role == Role.forensic_scientist) {
             resendSkipButtonToForensicScientist(player);
 
+            // HUD hasil malam itu state client-only, jadi ke-reset pas dia
+            // disconnect -- kirim ulang kalo murderer emang udah konfirmasi.
+            if (murdererConfirmed) {
+                sendMurderResultHud(player);
+            }
+
             // FS ini yang tadi offline pas giveForensicScientistPapers manggil --
             // kasih sekarang, kategorinya sama kayak yang udah diacak sebelumnya.
             if (uuid.equals(pendingForensicScientistUuid) && pendingForensicPaperCategories != null) {
@@ -1843,12 +2057,18 @@ public class GameManager {
         } else if (role == Role.witness && murdererConfirmed) {
             player.sendSystemMessage(buildWitnessResultLine());
         } else if (role == Role.forensic_scientist && murdererConfirmed) {
-            player.sendSystemMessage(Component.literal("=== Hasil Malam ===").withStyle(ChatFormatting.GOLD));
+            player.sendSystemMessage(Component.literal(""));
+            player.sendSystemMessage(Component.literal("===== Hasil Malam =====").withStyle(ChatFormatting.GOLD));
+            player.sendSystemMessage(Component.literal(""));
             for (Component line : buildFsResultLines()) player.sendSystemMessage(line);
         }
 
         // Kirim ulang pesan konfirmasi jika diperlukan
         resendConfirmMessage(player, role);
+
+        // Badge police: jatah yang kelewat pas dia offline + sinkron ulang
+        // icon badge di nametag semua orang (lihat PresentationManager).
+        PresentationManager.get().onPlayerRejoined(player, server);
     }
 
     // Method untuk reset actionbar countdown
@@ -2267,7 +2487,7 @@ public class GameManager {
             notifyRole(Role.forensic_scientist, fsMsg);
 
             if (!accompliceOffline) {
-                notifyRole(Role.accomplice, Component.literal(murdererName + " (Murderer) sudah offline. Item bakal dipilih otomatis dalam " + getOfflineRevealSeconds() + " detik kalo gak balik.")
+                notifyRole(Role.accomplice, Component.literal(murdererName + " (Murderer) sudah offline. Item bakal dipilih otomatis dalam " + getOfflineRevealSeconds() + " detik.")
                         .withStyle(ChatFormatting.RED));
             }
 
@@ -2730,7 +2950,7 @@ public class GameManager {
                     discussTicksLeft = discussTimerSeconds * 20;
                     state = State.DISCUSS;
                 } else {
-                    // Ronde 3 abis tanpa ada yang confess -- penjahat gak
+                    // Ronde 3 abis tanpa ada yang confess -- pembunuh gak
                     // ketauan sampe akhir, langsung menang.
                     PresentationManager.get().onRoundsExhausted(serverRef);
                 }
@@ -2745,7 +2965,31 @@ public class GameManager {
         PresentationManager.get().startPresentasi(server, computeClockwisePresentationOrder());
     }
 
-    private void broadcast(MinecraftServer server, Component message) {
+    // Logo Discord itu GLYPH dari font custom kita sendiri
+    // (assets/deception/font/icons.json -> textures/font/discord.png), bukan
+    // emoji/karakter unicode -- font vanilla gak punya logo begini. Sengaja
+    // font terpisah, BUKAN nimpa "minecraft:default", biar font vanilla gak
+    // keganggu sama sekali.
+    private static final net.minecraft.resources.ResourceLocation ICON_FONT =
+            new net.minecraft.resources.ResourceLocation(com.deception.DeceptionMod.MOD_ID, "icons");
+    // U+E000 (private use area) -- karakter mentah, HARUS sama persis sama
+    // "chars" di icons.json. Aman karena compile-nya dipaksa UTF-8 (lihat
+    // options.encoding di build.gradle); jangan simpen file ini pake
+    // encoding lain, glyph-nya bakal rusak.
+    private static final String DISCORD_GLYPH = "";
+
+    /**
+     * Warnanya WAJIB di-set putih: glyph bitmap di Minecraft itu dikaliin
+     * sama warna teks-nya, jadi kalo kena warna lain (atau kebawa warna
+     * komponen induk) logonya ikut berubah warna. Putih = pengali netral,
+     * warna asli texture-nya yang keluar.
+     */
+    private static Component discordIcon() {
+        return Component.literal(DISCORD_GLYPH)
+                .withStyle(style -> style.withFont(ICON_FONT).withColor(ChatFormatting.WHITE));
+    }
+
+    public void broadcast(MinecraftServer server, Component message) {
         server.getPlayerList().broadcastSystemMessage(message, false);
     }
 

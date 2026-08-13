@@ -90,7 +90,7 @@ public class InvestigationPaperItem extends ClueBlockItem {
         if (tag != null && tag.getBoolean(PresentationManager.PLACEMENT_LOCKED_TAG)) {
             if (context.getPlayer() instanceof ServerPlayer sp) {
                 sp.sendSystemMessage(Component.literal(
-                        "Hapus salah satu scene tile dulu (pake Penghapus Scene Tile) sebelum naro clue baru.")
+                        "Hapus salah satu scene tile terlebih dahulu menggunakan \"Penghapus Scene Tile\" sebelum taruh clue baru.")
                         .withStyle(ChatFormatting.RED));
             }
             return InteractionResult.FAIL;

@@ -5,7 +5,7 @@ plugins {
     id 'net.minecraftforge.gradle' version '[6.0,6.2)'
 }
 
-version = '1.0.0'
+version = '1.0.1'
 group = 'com.deception'
 
 base {
@@ -25,6 +25,14 @@ minecraft {
             workingDirectory project.file('run')
             property 'forge.logging.markers', 'REGISTRIES'
             property 'forge.logging.console.level', 'debug'
+
+            // Wajib gara-gara CGM (MrCrayfish's Gun Mod) bawa mixin. Refmap-nya
+            // (cgm.refmap.json) isinya nama SRG (m_91277_), sementara dev env
+            // kita pake mappings 'official' (startUseItem), jadi mixin gagal
+            // nemu target dan crash pas boot. Dua property ini nyuruh mixin
+            // nerjemahin refmap-nya dulu pake tabel srg->official punya FG.
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
             mods {
                 deception {
                     source sourceSets.main
@@ -35,6 +43,14 @@ minecraft {
             workingDirectory project.file('run')
             property 'forge.logging.markers', 'REGISTRIES'
             property 'forge.logging.console.level', 'debug'
+
+            // Wajib gara-gara CGM (MrCrayfish's Gun Mod) bawa mixin. Refmap-nya
+            // (cgm.refmap.json) isinya nama SRG (m_91277_), sementara dev env
+            // kita pake mappings 'official' (startUseItem), jadi mixin gagal
+            // nemu target dan crash pas boot. Dua property ini nyuruh mixin
+            // nerjemahin refmap-nya dulu pake tabel srg->official punya FG.
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
             mods {
                 deception {
                     source sourceSets.main
@@ -44,17 +60,37 @@ minecraft {
     }
 }
 
+// output.srg di atas dibaca pas runtime, jadi pastiin ke-generate duluan --
+// kalo abis `clean` file-nya belum ada dan mixin bakal balik crash lagi.
+tasks.matching { it.name.startsWith('prepareRun') }.configureEach {
+    dependsOn 'createSrgToMcp'
+}
+
 repositories {
     mavenCentral()
     maven {
         // Simple Voice Chat API (plugin buat integrasi mute presentasi)
         url 'https://maven.maxhenkel.de/repository/public'
     }
+    maven {
+        // CurseMaven -- MrCrayfish's Gun Mod [Unofficial] + Framework
+        // (dependency-nya), dipake buat shotgun di fase shootout murderer.
+        url 'https://cursemaven.com'
+        content { includeGroup 'curse.maven' }
+    }
 }
 
 dependencies {
     minecraft 'net.minecraftforge:forge:1.20.1-47.3.0'
     compileOnly "de.maxhenkel.voicechat:voicechat-api:2.6.20"
+
+    // SENGAJA runtimeOnly, bukan compileOnly: kode kita GAK pernah nyentuh
+    // class CGM sama sekali (lihat ShootoutGun -- item & NBT-nya diakses
+    // lewat ResourceLocation + registry, hit-nya lewat LivingAttackEvent
+    // vanilla). Jadi build tetep jalan walaupun CGM belum ke-download, dan
+    // ini cuma biar `gradle runClient`/`runServer` beneran ada mod-nya.
+    runtimeOnly fg.deobf('curse.maven:framework-549225:7573740')
+    runtimeOnly fg.deobf('curse.maven:mrcrayfishs-gun-mod-unofficial-945471:8399743')
 }
 
 tasks.named('processResources', ProcessResources).configure {

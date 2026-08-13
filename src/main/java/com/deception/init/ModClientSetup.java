@@ -1,8 +1,5 @@
 package com.deception.init;
 
-import com.deception.menu.ModMenus;
-import net.minecraft.client.gui.screens.MenuScreens;
-import net.minecraft.client.gui.screens.inventory.ContainerScreen;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
@@ -34,10 +31,7 @@ public class ModClientSetup {
             MinecraftForge.EVENT_BUS.register(BlindfoldOverlay.class);
             MinecraftForge.EVENT_BUS.register(BlindfoldInputLock.class);
             MinecraftForge.EVENT_BUS.register(PoliceBadgeNameTagRenderer.class);
-
-            // UI tebak witness -- reuse ContainerScreen (chest) vanilla apa
-            // adanya (WitnessGuessMenu extends ChestMenu), gak perlu Screen custom.
-            MenuScreens.register(ModMenus.WITNESS_GUESS.get(), ContainerScreen::new);
+            MinecraftForge.EVENT_BUS.register(MovementLockClientState.class);
 
         });
     }
@@ -45,5 +39,7 @@ public class ModClientSetup {
         ClueHoverOverlay.register(event);
         ClusterHoverOverlay.register(event);
         InvestigationPaperHoverOverlay.register(event);
+        MurderResultOverlay.register(event);
+        RoleVisibleOverlay.register(event);
     }
 }

@@ -3,6 +3,7 @@ package com.deception.voicechat;
 import com.deception.DeceptionMod;
 import com.deception.game.GameManager;
 import com.deception.game.PresentationManager;
+import com.deception.game.VoiceDebugState;
 import de.maxhenkel.voicechat.api.ForgeVoicechatPlugin;
 import de.maxhenkel.voicechat.api.VoicechatPlugin;
 import de.maxhenkel.voicechat.api.events.EventRegistration;
@@ -39,12 +40,22 @@ public class DeceptionVoicechatPlugin implements VoicechatPlugin {
     }
 
     private void onMicrophonePacket(MicrophonePacketEvent event) {
-        if (GameManager.get().getState() != GameManager.State.PRESENTASI) return;
-
         UUID sender = event.getSenderConnection().getPlayer().getUuid();
+
+        // Di luar fase presentasi gak ada yang dibatasi -- semua paket lewat.
+        if (GameManager.get().getState() != GameManager.State.PRESENTASI) {
+            VoiceDebugState.recordPacket(sender, true);
+            return;
+        }
+
         UUID speaker = PresentationManager.get().getCurrentSpeaker();
-        if (!sender.equals(speaker)) {
+        boolean passed = sender.equals(speaker);
+        if (!passed) {
             event.cancel();
         }
+        // Dicatet SETELAH keputusan cancel-nya, biar yang kelaporan itu nasib
+        // asli paketnya, bukan tebakan. Method ini jalan di thread voicechat
+        // -- lihat javadoc VoiceDebugState.
+        VoiceDebugState.recordPacket(sender, passed);
     }
 }

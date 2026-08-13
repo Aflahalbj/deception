@@ -1,11 +1,10 @@
 package com.deception.init;
 
+import com.deception.client.gui.DeceptionButton;
+import com.deception.client.gui.DeceptionScreen;
 import com.deception.network.ChooseForensicOptionPacket;
 import com.deception.network.ModNetworking;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionHand;
 
@@ -16,19 +15,20 @@ import java.util.List;
  * pilih "Cerah"). Dibuka dari OpenForensicPickerPacket, pilihan dikirim
  * balik ke server lewat ChooseForensicOptionPacket. Bukan container
  * screen -- gak ada slot/inventory, cuma list tombol biasa.
+ *
+ * <p>Layout-nya diserahin ke DeceptionScreen: semua posisi dihitung sebagai
+ * fraksi area konten papan, gak ada koordinat pixel yang dihardcode.
  */
-public class ForensicPaperScreen extends Screen {
-
-    private static final int BUTTON_WIDTH = 200;
-    private static final int BUTTON_HEIGHT = 20;
-    private static final int BUTTON_SPACING = 24;
+public class ForensicPaperScreen extends DeceptionScreen {
 
     private final String category;
     private final List<String> options;
     private final InteractionHand hand;
 
     private ForensicPaperScreen(String category, List<String> options, InteractionHand hand) {
-        super(Component.literal("Kategori: " + category));
+        // Papan polos: opsinya bisa banyak, butuh lebar penuh -- papan DETAILED
+        // kolom tengahnya kesempitan karena kiri-kanan keisi polaroid.
+        super(Component.literal(category), Board.CLEAN);
         this.category = category;
         this.options = options;
         this.hand = hand;
@@ -39,34 +39,24 @@ public class ForensicPaperScreen extends Screen {
     }
 
     @Override
-    protected void init() {
-        int startY = this.height / 2 - (options.size() * BUTTON_SPACING) / 2;
-        int centerX = this.width / 2 - BUTTON_WIDTH / 2;
+    protected void buildContent() {
+        int count = options.size();
+        // Kategori bisa punya 6 atau 8 opsi -- Grid yang ngatur biar dua-duanya
+        // tetap muat di papan tanpa perlu angka beda per kategori.
+        Grid grid = column(count);
 
-        for (int i = 0; i < options.size(); i++) {
+        for (int i = 0; i < count; i++) {
             String option = options.get(i);
-            int y = startY + i * BUTTON_SPACING;
-            this.addRenderableWidget(Button.builder(Component.literal(option), btn -> chooseOption(option))
-                    .bounds(centerX, y, BUTTON_WIDTH, BUTTON_HEIGHT)
-                    .build());
+            this.addRenderableWidget(new DeceptionButton(
+                    grid.x(i), grid.y(i), grid.itemWidth, grid.itemHeight,
+                    Component.literal(option),
+                    button -> chooseOption(option)));
         }
     }
 
     private void chooseOption(String option) {
-        ModNetworking.CHANNEL.sendToServer(new ChooseForensicOptionPacket(hand, category, option));
+        ModNetworking.CHANNEL.sendToServer(
+                new ChooseForensicOptionPacket(hand, category, option));
         this.onClose();
-    }
-
-    @Override
-    public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
-        this.renderBackground(guiGraphics);
-        super.render(guiGraphics, mouseX, mouseY, partialTick);
-        int titleY = this.height / 2 - (options.size() * BUTTON_SPACING) / 2 - 24;
-        guiGraphics.drawCenteredString(this.font, this.title, this.width / 2, titleY, 0xFFFFFF);
-    }
-
-    @Override
-    public boolean isPauseScreen() {
-        return false;
     }
 }

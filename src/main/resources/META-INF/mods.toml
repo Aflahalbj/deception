@@ -23,3 +23,18 @@ description='''${mod_description}'''
     versionRange="${minecraft_version_range}"
     ordering="NONE"
     side="BOTH"
+
+# MrCrayfish's Gun Mod [Unofficial] -- shotgun-nya dipake di fase shootout
+# murderer (lihat game/ShootoutGun). Mandatory: tanpa ini fase shootout gak
+# bisa jalan sama sekali, jadi mending gagal di loading daripada baru
+# ketauan pas game udah jalan. "framework" gak perlu didaftar di sini, CGM
+# sendiri yang minta.
+[[dependencies.deception]]
+    modId="cgm"
+    mandatory=true
+    # JANGAN dikosongin ("") -- Forge gak nganggep itu "versi bebas", tapi
+    # range kosong yang GAK PERNAH ke-penuhin, jadi loading langsung gagal
+    # walaupun CGM-nya udah keinstall.
+    versionRange="[1.4,)"
+    ordering="NONE"
+    side="BOTH"

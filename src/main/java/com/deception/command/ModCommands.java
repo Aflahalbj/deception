@@ -3,6 +3,7 @@ package com.deception.command;
 import com.deception.game.GameManager;
 import com.deception.game.PresentationManager;
 import com.deception.game.Role;
+import com.deception.game.VoiceDebugState;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -10,7 +11,9 @@ import com.mojang.brigadier.suggestion.SuggestionProvider;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.HoverEvent;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -35,6 +38,9 @@ public class ModCommands {
 
     private static final SuggestionProvider<CommandSourceStack> ROLE_NAMES = (ctx, builder) ->
             SharedSuggestionProvider.suggest(Arrays.stream(Role.values()).map(Role::name), builder);
+
+    private static final SuggestionProvider<CommandSourceStack> HELP_COMMANDS = (ctx, builder) ->
+            SharedSuggestionProvider.suggest(CommandDescriptions.names(), builder);
 
     private static final SuggestionProvider<CommandSourceStack> SETFS_OPTIONS = (ctx, builder) -> {
         List<String> options = new ArrayList<>();
@@ -64,7 +70,7 @@ public class ModCommands {
                                     if (ok) {
                                         ctx.getSource().sendSuccess(() -> Component.literal(name + " berhasil di-regis.").withStyle(ChatFormatting.GREEN), true);
                                     } else {
-                                        ctx.getSource().sendFailure(Component.literal("Player " + name + " tidak ditemukan (online/bot)."));
+                                        ctx.getSource().sendFailure(Component.literal("Player " + name + " tidak ditemukan."));
                                     }
                                     return 1;
                                 })))
@@ -73,7 +79,7 @@ public class ModCommands {
                         .requires(src -> src.hasPermission(2))
                         .executes(ctx -> {
                             int count = GameManager.get().registerAll(ctx.getSource().getServer());
-                            ctx.getSource().sendSuccess(() -> Component.literal(count + " player berhasil di-regis semua.").withStyle(ChatFormatting.GREEN), true);
+                            ctx.getSource().sendSuccess(() -> Component.literal(count + " player berhasil di-regis.").withStyle(ChatFormatting.GREEN), true);
                             return count;
                         }))
 
@@ -110,7 +116,6 @@ public class ModCommands {
                                 .then(literal("remove").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.accomplice, false)))))
 
                 .then(literal("roleinfo")
-                        .requires(src -> src.hasPermission(2))
                         .then(argument("namarole", StringArgumentType.word())
                                 .suggests(ROLE_NAMES)
                                 .executes(ctx -> {
@@ -120,7 +125,7 @@ public class ModCommands {
                                         ctx.getSource().sendFailure(Component.literal("Role tidak dikenal: " + roleName));
                                         return 0;
                                     }
-                                    ctx.getSource().sendSuccess(() -> Component.literal(RoleDescriptions.get(role)).withStyle(ChatFormatting.AQUA), false);
+                                    ctx.getSource().sendSuccess(() -> Component.literal("\n" + RoleDescriptions.get(role)).withStyle(ChatFormatting.YELLOW), false);
                                     return 1;
                                 })))
 
@@ -205,6 +210,31 @@ public class ModCommands {
                                             return 1;
                                         }))))
 
+                // GUI info role -- SENGAJA tanpa .requires(), semua player boleh
+                // buka. Isinya penjelasan statis, gak nunjukin role siapa pun.
+                .then(literal("roleinfo")
+                        .executes(ctx -> {
+                            if (!(ctx.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) {
+                                ctx.getSource().sendFailure(Component.literal("Command ini hanya bisa dijalankan oleh player."));
+                                return 0;
+                            }
+                            com.deception.network.ModNetworking.sendOpenRoleInfo(player);
+                            return 1;
+                        }))
+
+                // GUI setting -- semua isinya juga tetap bisa lewat subcommand
+                // (settimer/customrole/setrole), GUI cuma pembungkusnya.
+                .then(literal("setting")
+                        .requires(src -> src.hasPermission(2))
+                        .executes(ctx -> {
+                            if (!(ctx.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) {
+                                ctx.getSource().sendFailure(Component.literal("Command ini hanya bisa dijalankan oleh player."));
+                                return 0;
+                            }
+                            com.deception.network.ModNetworking.sendOpenSetting(player);
+                            return 1;
+                        }))
+
                 .then(literal("startgame")
                         .requires(src -> src.hasPermission(2))
                         .executes(ctx -> {
@@ -238,9 +268,11 @@ public class ModCommands {
                                 ctx.getSource().sendSuccess(() -> Component.literal("Belum ada player yang di-regis."), false);
                                 return 0;
                             }
-                            ctx.getSource().sendSuccess(() -> Component.literal("Player teregistrasi (" + lines.size() + "):").withStyle(ChatFormatting.AQUA), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal("").withStyle(ChatFormatting.GOLD), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal("===== Player teregistrasi (" + lines.size() + ") =====").withStyle(ChatFormatting.GOLD), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal("").withStyle(ChatFormatting.GOLD), false);
                             for (String line : lines) {
-                                ctx.getSource().sendSuccess(() -> Component.literal("- " + line), false);
+                                ctx.getSource().sendSuccess(() -> Component.literal("  - " + line).withStyle(ChatFormatting.WHITE), false);
                             }
                             return lines.size();
                         }))
@@ -264,26 +296,38 @@ public class ModCommands {
                                 ctx.getSource().sendSuccess(() -> Component.literal("Reveal malam ini di-skip.").withStyle(ChatFormatting.GREEN), true);
                                 return 1;
                             } else {
-                                ctx.getSource().sendFailure(Component.literal("Gagal skip: bukan lagi fase night, atau gagal random-in item murderer."));
+                                ctx.getSource().sendFailure(Component.literal("Gagal skip: bukan fase night."));
                                 return 0;
                             }
                         }))
-                // Vote skip diskusi -- semua player teregistrasi bisa manggil,
-                // gak perlu OP. Toggle vote; kalo mayoritas player ONLINE
-                // udah vote, diskusi langsung dilewatin ke presentasi (lihat
-                // PresentationManager#voteSkip).
+                // Skip fase yang lagi jalan -- semua player teregistrasi bisa
+                // manggil, gak perlu OP. Aturannya beda per fase (lihat
+                // PresentationManager#skip):
+                //   DISCUSS    -> toggle vote, dilewatin kalo mayoritas ONLINE setuju
+                //   PRESENTASI -> langsung dilewatin, tapi cuma boleh sama yang
+                //                 lagi dapet giliran, FS, atau OP
                 .then(literal("skip")
                         .executes(ctx -> {
                             if (!(ctx.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) {
                                 ctx.getSource().sendFailure(Component.literal("Command ini hanya bisa dijalankan oleh player."));
                                 return 0;
                             }
-                            boolean ok = PresentationManager.get().voteSkip(player, ctx.getSource().getServer());
-                            if (!ok) {
-                                ctx.getSource().sendFailure(Component.literal("Gak ada diskusi yang bisa di-skip sekarang."));
-                                return 0;
+                            PresentationManager.SkipResult result =
+                                    PresentationManager.get().skip(player, ctx.getSource().getServer());
+                            switch (result) {
+                                case DISCUSS_VOTED, PRESENTASI_SKIPPED -> {
+                                    return 1;
+                                }
+                                case NO_PERMISSION -> {
+                                    ctx.getSource().sendFailure(Component.literal(
+                                            "Hanya yang sedang presentasi, forensic scientist, atau admin yang bisa skip presentasi."));
+                                    return 0;
+                                }
+                                default -> {
+                                    ctx.getSource().sendFailure(Component.literal("Tidak ada diskusi atau presentasi yang bisa di-skip."));
+                                    return 0;
+                                }
                             }
-                            return 1;
                         }))
 
                 // Testing: paksa mulai diskusi tanpa perlu FS beneran naro
@@ -293,10 +337,10 @@ public class ModCommands {
                         .executes(ctx -> {
                             boolean ok = PresentationManager.get().forceStartDiscussion(ctx.getSource().getServer());
                             if (ok) {
-                                ctx.getSource().sendSuccess(() -> Component.literal("Diskusi dipaksa mulai (skip nunggu FS naro paper).").withStyle(ChatFormatting.GREEN), true);
+                                ctx.getSource().sendSuccess(() -> Component.literal("Diskusi dipaksa mulai.").withStyle(ChatFormatting.GREEN), true);
                                 return 1;
                             }
-                            ctx.getSource().sendFailure(Component.literal("Gagal skip: bukan lagi nunggu FS, atau diskusi udah mulai."));
+                            ctx.getSource().sendFailure(Component.literal("Gagal skip: tidak sedang menunggu FS, atau diskusi sudah dimulai."));
                             return 0;
                         }))
 
@@ -307,7 +351,7 @@ public class ModCommands {
                         .executes(ctx -> {
                             boolean ok = PresentationManager.get().resolveConfession(true, ctx.getSource().getServer());
                             if (!ok) {
-                                ctx.getSource().sendFailure(Component.literal("Gak ada confession yang lagi nunggu jawaban."));
+                                ctx.getSource().sendFailure(Component.literal("Tidak ada confession yang sedang menunggu jawaban."));
                                 return 0;
                             }
                             return 1;
@@ -317,11 +361,62 @@ public class ModCommands {
                         .executes(ctx -> {
                             boolean ok = PresentationManager.get().resolveConfession(false, ctx.getSource().getServer());
                             if (!ok) {
-                                ctx.getSource().sendFailure(Component.literal("Gak ada confession yang lagi nunggu jawaban."));
+                                ctx.getSource().sendFailure(Component.literal("Tidak ada confession yang sedang menunggu jawaban."));
                                 return 0;
                             }
                             return 1;
                         }))
+                // Debug voice chat -- lihat VoiceDebugState.
+                .then(literal("voicedebug")
+                        .requires(src -> src.hasPermission(2))
+                        .then(literal("on").executes(ctx -> setVoiceDebug(ctx.getSource(), true)))
+                        .then(literal("off").executes(ctx -> setVoiceDebug(ctx.getSource(), false)))
+                        .executes(ctx -> {
+                            boolean on = VoiceDebugState.isEnabled();
+                            ctx.getSource().sendSuccess(() -> Component.literal("Voice debug sekarang: " + (on ? "ON" : "OFF"))
+                                    .withStyle(on ? ChatFormatting.GREEN : ChatFormatting.GRAY), false);
+                            if (on) {
+                                List<String> speaking = VoiceDebugState.activeSpeakers(ctx.getSource().getServer());
+                                ctx.getSource().sendSuccess(() -> Component.literal("  Lagi kirim mic: "
+                                                + (speaking.isEmpty() ? "-" : String.join(", ", speaking)))
+                                        .withStyle(ChatFormatting.GRAY), false);
+                            }
+                            return 1;
+                        }))
+
+                // Tampilin role sendiri di pojok kanan atas layar tiap peserta.
+                .then(literal("rolevisible")
+                        .requires(src -> src.hasPermission(2))
+                        .then(literal("on").executes(ctx -> setRoleVisible(ctx.getSource(), true)))
+                        .then(literal("off").executes(ctx -> setRoleVisible(ctx.getSource(), false)))
+                        .executes(ctx -> {
+                            boolean on = GameManager.get().isRoleVisible();
+                            ctx.getSource().sendSuccess(() -> Component.literal("Role visible sekarang: " + (on ? "ON" : "OFF"))
+                                    .withStyle(on ? ChatFormatting.GREEN : ChatFormatting.GRAY), false);
+                            return 1;
+                        }))
+
+                // Bantuan command. Teksnya di CommandDescriptions.
+                .then(literal("help")
+                        .requires(src -> src.hasPermission(2))
+                        .then(argument("command", StringArgumentType.word())
+                                .suggests(HELP_COMMANDS)
+                                .executes(ctx -> {
+                                    String name = StringArgumentType.getString(ctx, "command");
+                                    CommandDescriptions.Entry entry = CommandDescriptions.get(name);
+                                    if (entry == null) {
+                                        ctx.getSource().sendFailure(Component.literal(
+                                                "Command tidak dikenal: " + name + ". Ketik /deception help buat lihat daftarnya."));
+                                        return 0;
+                                    }
+                                    sendHelpDetail(ctx.getSource(), name.toLowerCase(), entry);
+                                    return 1;
+                                }))
+                        .executes(ctx -> {
+                            sendHelpList(ctx.getSource());
+                            return CommandDescriptions.names().size();
+                        }))
+
                         // Di dalam register method, setelah literal("skipreveal") atau di bagian manapun
                 .then(literal("confirm")
                         .executes(ctx -> {
@@ -340,6 +435,58 @@ public class ModCommands {
                             }
                         }))
                 );
+    }
+
+    /** /deception help -- daftar semua command, tiap barisnya bisa diklik buat lihat detailnya. */
+    private static void sendHelpList(CommandSourceStack source) {
+        source.sendSuccess(() -> Component.literal(""), false);
+        source.sendSuccess(() -> Component.literal("===== Command Deception =====").withStyle(ChatFormatting.GOLD), false);
+        source.sendSuccess(() -> Component.literal(""), false);
+
+        for (Map.Entry<String, CommandDescriptions.Entry> e : CommandDescriptions.all()) {
+            String name = e.getKey();
+            source.sendSuccess(() -> Component.literal("  " + e.getValue().usage())
+                    .withStyle(style -> style
+                            .withColor(ChatFormatting.YELLOW)
+                            .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/deception help " + name))
+                            .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                                    Component.literal("Klik buat penjelasan lengkap")))), false);
+        }
+
+        source.sendSuccess(() -> Component.literal(""), false);
+        source.sendSuccess(() -> Component.literal("  Ketik /deception help <command> buat penjelasan lengkapnya.")
+                .withStyle(ChatFormatting.GRAY), false);
+        source.sendSuccess(() -> Component.literal(""), false);
+    }
+
+    /** /deception help <command> -- sintaks, izin, penjelasan panjang. */
+    private static void sendHelpDetail(CommandSourceStack source, String name, CommandDescriptions.Entry entry) {
+        source.sendSuccess(() -> Component.literal(""), false);
+        source.sendSuccess(() -> Component.literal("===== /deception " + name + " =====").withStyle(ChatFormatting.GOLD), false);
+        source.sendSuccess(() -> Component.literal(""), false);
+        source.sendSuccess(() -> Component.literal("  Pemakaian: ").withStyle(ChatFormatting.GRAY)
+                .append(Component.literal(entry.usage()).withStyle(ChatFormatting.YELLOW)), false);
+        source.sendSuccess(() -> Component.literal("  Izin: ").withStyle(ChatFormatting.GRAY)
+                .append(Component.literal(entry.permission()).withStyle(ChatFormatting.AQUA)), false);
+        source.sendSuccess(() -> Component.literal(""), false);
+        source.sendSuccess(() -> Component.literal("  " + entry.detail()).withStyle(ChatFormatting.WHITE), false);
+        source.sendSuccess(() -> Component.literal(""), false);
+    }
+
+    private static int setVoiceDebug(CommandSourceStack source, boolean enabled) {
+        VoiceDebugState.setEnabled(enabled);
+        source.sendSuccess(() -> Component.literal("Voice debug: " + (enabled ? "ON" : "OFF")
+                        + (enabled ? " -- tiap mic yang nyampe server dilaporin ke OP." : ""))
+                .withStyle(enabled ? ChatFormatting.GREEN : ChatFormatting.YELLOW), true);
+        return 1;
+    }
+
+    private static int setRoleVisible(CommandSourceStack source, boolean visible) {
+        GameManager.get().setRoleVisible(source.getServer(), visible);
+        source.sendSuccess(() -> Component.literal("Role visible: " + (visible ? "ON" : "OFF")
+                        + (visible ? " -- role masing-masing muncul di pojok kanan atas layar." : ""))
+                .withStyle(visible ? ChatFormatting.GREEN : ChatFormatting.YELLOW), true);
+        return 1;
     }
 
     private static int toggleCustomRole(CommandSourceStack source, Role role, boolean add) {

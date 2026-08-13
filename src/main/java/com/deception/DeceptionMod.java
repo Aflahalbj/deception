@@ -10,7 +10,6 @@ import com.deception.init.ModBlockEntities;
 import com.deception.init.ModBlocks;
 import com.deception.init.ModClientSetup;
 import com.deception.init.ModItems;
-import com.deception.menu.ModMenus;
 
 import net.minecraft.ChatFormatting;
 import net.minecraft.server.level.ServerLevel;
@@ -21,6 +20,7 @@ import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.item.ItemTossEvent;
+import net.minecraftforge.event.entity.living.LivingAttackEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
@@ -48,7 +48,6 @@ public class DeceptionMod {
         ModBlockEntities.BLOCK_ENTITIES.register(modEventBus);
         ModItems.ITEMS.register(modEventBus);
         ModItems.CREATIVE_TABS.register(modEventBus);
-        ModMenus.MENUS.register(modEventBus);
 
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(ModClientSetup::onClientSetup);
@@ -68,6 +67,11 @@ public class DeceptionMod {
     public void onServerTick(TickEvent.ServerTickEvent event) {
         if (event.phase == TickEvent.Phase.END) {
             GameManager.get().tick();
+            // SENGAJA di luar GameManager.tick(): debug voice harus tetep
+            // jalan walaupun gak lagi ada game (state IDLE), soalnya justru
+            // sering dipake buat ngetes mic sebelum mulai main.
+            com.deception.game.VoiceDebugState.tick(
+                    net.minecraftforge.server.ServerLifecycleHooks.getCurrentServer());
         }
     }
 
@@ -95,6 +99,14 @@ public class DeceptionMod {
         if (event.getEntity() instanceof ServerPlayer serverPlayer) {
             GameManager.get().refreshOwnerHeadSkin(serverPlayer.getServer(), serverPlayer.getUUID());
             GameManager.get().onPlayerRejoined(serverPlayer.getServer(), serverPlayer);
+
+            // Kunci gerak itu state di CLIENT (lihat game/PlayerFreeze) dan
+            // dia gak ke-reset sendiri pas relog -- jadi harus disinkron
+            // ulang di sini. Tanpa ini, player yang DC pas lagi dibekuin
+            // bakal balik dalam keadaan kekunci selamanya kalo shootout-nya
+            // keburu kelar selagi dia offline.
+            com.deception.network.ModNetworking.sendMovementLock(
+                    serverPlayer, com.deception.game.PlayerFreeze.isFrozen(serverPlayer.getUUID()));
         }
     }
 
@@ -132,36 +144,61 @@ public class DeceptionMod {
         }
     }
 
-    // Cegah police_badge di-drop (Q) -- lihat PresentationManager, item ini
-    // dikunci di hotbar slot 5 selama diskusi/presentasi. Bagian "gak bisa
-    // dipindah/di-swap" ditangani safety-net tiap tick di PresentationManager#tick.
+    // Cegah police_badge (slot 5, selama diskusi/presentasi), shotgun
+    // shootout (slot 1), dan perkakas Forensic Scientist (investigation
+    // paper + penghapus scene tile) di-drop pake Q atau ditarik keluar dari
+    // GUI inventory. Bagian "gak bisa dipindah/di-swap" ditangani safety-net
+    // tiap tick di PresentationManager#tick (enforceBadgeSlot &
+    // enforceShotgunSlot).
     @SubscribeEvent
     public void onItemToss(ItemTossEvent event) {
-        if (PresentationManager.get().isLockedItem(event.getEntity().getItem())) {
-            event.setCanceled(true);
+        ItemStack tossed = event.getEntity().getItem();
+        if (!PresentationManager.get().isLockedItem(tossed)
+                && !PresentationManager.get().isForensicTool(tossed)
+                && !com.deception.game.ShootoutGun.isShootoutGun(tossed)) {
+            return;
         }
+
+        event.setCanceled(true);
+
+        // WAJIB dibalikin manual. Pas event ini jalan, stack-nya UDAH
+        // dikeluarin dari inventory sama ForgeHooks#onPlayerTossEvent
+        // (player.drop() dipanggil DULUAN, baru event-nya di-post), dan
+        // cancel cuma bikin dia "return null" tanpa naro balik apa-apa --
+        // jadi kalo cuma di-cancel, itemnya lenyap beneran.
+        //
+        // Badge & shotgun kebetulan gak keliatan ilang selama ini soalnya
+        // ada safety-net tiap tick yang bikinin ulang (enforceBadgeSlot &
+        // enforceShotgunSlot); perkakas FS gak punya itu, jadi ilangnya
+        // permanen.
+        if (event.getPlayer().level().isClientSide()) return;
+        event.getPlayer().getInventory().add(tossed);
     }
 
     // Klik kanan police_badge (totem asli yang di-retexture) di udara --
     // trigger flow "confession" ("X ingin menyelesaikan kasus"), lihat
-    // PresentationManager#tryStartConfession. Klik kanan bow "Tebak Witness"
-    // (murderer, gak ada arrow-nya jadi gak bisa ditembakin) buka UI chest
-    // isi head semua player buat nebak witness -- lihat
-    // PresentationManager#tryOpenWitnessGuessMenu.
+    // PresentationManager#tryStartConfession.
     @SubscribeEvent
     public void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
         if (event.getLevel().isClientSide()) return;
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
 
-        ItemStack stack = player.getItemInHand(event.getHand());
-
         if (PresentationManager.get().tryStartConfession(player, player.getServer())) {
             event.setCanceled(true);
-            return;
         }
+    }
 
-        if (PresentationManager.get().isWitnessGuessBow(stack)
-                && PresentationManager.get().tryOpenWitnessGuessMenu(player, player.getServer())) {
+    // Fase shootout: semua damage ke peserta dicegat di sini. Peluru CGM
+    // nyerang lewat Entity#hurt biasa, jadi LivingAttackEvent vanilla udah
+    // cukup -- gak perlu compile ke API CGM sama sekali (lihat
+    // game/ShootoutGun). Yang mutusin ngitung-apa-kagak-nya
+    // PresentationManager#onShootoutHit; di sini tinggal cancel damage-nya.
+    @SubscribeEvent
+    public void onLivingAttack(LivingAttackEvent event) {
+        if (event.getEntity().level().isClientSide()) return;
+        if (!(event.getEntity() instanceof ServerPlayer victim)) return;
+
+        if (PresentationManager.get().onShootoutHit(victim, event.getSource())) {
             event.setCanceled(true);
         }
     }
