@@ -39,6 +39,8 @@ public class DeceptionMod {
 
     public static final String MOD_ID = "deception";
 
+    private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
+
     public DeceptionMod() {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
 
@@ -79,6 +81,21 @@ public class DeceptionMod {
     // kalo game lagi jalan, stopgame dulu (restore arena, balikin
     // pvp/difficulty/gamemode) biar gak ninggalin arena dalam kondisi
     // "kepasang" pas server nyala lagi.
+    // Pasang world save arena dari jar SEBELUM dimensinya kepake. Sengaja di
+    // ServerAboutToStartEvent, bukan ServerStarting: begitu chunk arena
+    // ke-load, Minecraft megang versinya sendiri di memori dan bakal nimpa
+    // balik file yang kita tulis pas dia nge-save.
+    @SubscribeEvent
+    public void onServerAboutToStart(net.minecraftforge.event.server.ServerAboutToStartEvent event) {
+        try {
+            if (com.deception.game.ArenaDimension.install(event.getServer(), false)) {
+                LOGGER.info("Arena dipasang ke world save (belum ada sebelumnya).");
+            }
+        } catch (java.io.IOException e) {
+            LOGGER.error("Gagal memasang arena dari jar", e);
+        }
+    }
+
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
         GameManager.get().forceCleanupOnStartup(event.getServer());

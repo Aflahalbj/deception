@@ -6,6 +6,8 @@ import com.deception.init.ModBlocks;
 import com.deception.init.ModItems;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.level.Level;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.ClickEvent;
@@ -503,7 +505,7 @@ public class GameManager {
      * survival, state balik IDLE).
      */
     public void endGameWithResult(MinecraftServer server, Component title, Component chatMessage, boolean murdererTeamWon) {
-        ServerLevel level = server.overworld();
+        ServerLevel level = ArenaDimension.level(server);
         for (UUID uuid : registeredPlayers) {
             ServerPlayer player = server.getPlayerList().getPlayer(uuid);
             if (player != null) {
@@ -587,7 +589,7 @@ public class GameManager {
                 target.setDifficulty(previousDifficulty, true);
             }
 
-            ServerLevel level = target.overworld();
+            ServerLevel level = ArenaDimension.level(target);
             if (selectedMeansBacking != null) {
                 restoreBacking(level, selectedMeansBacking);
             }
@@ -631,6 +633,10 @@ public class GameManager {
                     if (blockReach != null) {
                         blockReach.setBaseValue(blockReach.getAttribute().getDefaultValue());
                     }
+
+                    // Paling belakangan: arena ada di dimensi sendiri, jadi
+                    // tanpa ini pemain ketinggalan di sana tanpa jalan pulang.
+                    sendPlayerHome(target, player);
                 }
             }
 
@@ -645,7 +651,7 @@ public class GameManager {
     }
 
     private void restoreArena(MinecraftServer server) {
-        ServerLevel level = server.overworld();
+        ServerLevel level = ArenaDimension.level(server);
 
         for (UUID headId : spawnedHeadEntities) {
             var entity = level.getEntity(headId);
@@ -1259,7 +1265,7 @@ public class GameManager {
      * clue-nya sendiri gak keganggu.
      */
     private void sendMurderResultHud(ServerPlayer fsPlayer) {
-        ServerLevel level = serverRef.overworld();
+        ServerLevel level = ArenaDimension.level(serverRef);
         com.deception.network.ModNetworking.sendMurderResultHud(fsPlayer,
                 clueStackAt(level, murdererSelectedMeansPos),
                 clueStackAt(level, murdererSelectedCluePos));
@@ -1421,7 +1427,7 @@ public class GameManager {
             leftMurdererName = "";
         }
 
-        ServerLevel level = serverRef.overworld();
+        ServerLevel level = ArenaDimension.level(serverRef);
 
         if (murdererSelectedMeansPos == null) {
             List<BlockPos> candidates = new ArrayList<>();
@@ -1469,7 +1475,7 @@ public class GameManager {
         murdererWindowOpen = false;
         murdererAutoPickAt = Integer.MAX_VALUE;
 
-        ServerLevel level = serverRef.overworld();
+        ServerLevel level = ArenaDimension.level(serverRef);
         if (murdererSelectedMeansBacking != null) restoreBacking(level, murdererSelectedMeansBacking);
         if (murdererSelectedClueBacking != null) restoreBacking(level, murdererSelectedClueBacking);
 
@@ -1613,7 +1619,7 @@ public class GameManager {
 
     private List<Component> buildFsResultMurder() {
         List<Component> lines = new ArrayList<>();
-        ServerLevel level = serverRef.overworld();
+        ServerLevel level = ArenaDimension.level(serverRef);
         String meansName = murdererSelectedMeansPos != null ? getItemName(level, murdererSelectedMeansPos) : "?";
         String clueName = murdererSelectedCluePos != null ? getItemName(level, murdererSelectedCluePos) : "?";
 
@@ -1633,7 +1639,7 @@ public class GameManager {
 
     private List<Component> buildFsResultLines() {
         List<Component> lines = new ArrayList<>();
-        ServerLevel level = serverRef.overworld();
+        ServerLevel level = ArenaDimension.level(serverRef);
         String meansName = murdererSelectedMeansPos != null ? getItemName(level, murdererSelectedMeansPos) : "?";
         String clueName = murdererSelectedCluePos != null ? getItemName(level, murdererSelectedCluePos) : "?";
 
@@ -1655,7 +1661,7 @@ public class GameManager {
 
     private List<Component> buildKillerResultLines() {
         List<Component> lines = new ArrayList<>();
-        ServerLevel level = serverRef.overworld();
+        ServerLevel level = ArenaDimension.level(serverRef);
         String meansName = murdererSelectedMeansPos != null ? getItemName(level, murdererSelectedMeansPos) : "?";
         String clueName = murdererSelectedCluePos != null ? getItemName(level, murdererSelectedCluePos) : "?";
 
@@ -1765,15 +1771,61 @@ public class GameManager {
         player.playNotifySound(sound, source, volume, pitch);
     }
 
+    /**
+     * Di mana tiap peserta berdiri SEBELUM ditarik ke arena, biar pas game
+     * kelar mereka bisa dibalikin ke situ.
+     *
+     * <p>Wajib ada gara-gara arena pindah ke dimensi sendiri: dulu pas arena
+     * masih nempel di overworld, abis main tinggal ditinggal di tempat dan
+     * pemain bisa jalan pulang sendiri. Sekarang kalo gak dibalikin, mereka
+     * nyangkut di dimensi arena tanpa jalan keluar.
+     */
+    private record HomeLocation(ResourceKey<Level> dimension, double x, double y, double z, float yaw, float pitch) {}
+
+    private final Map<UUID, HomeLocation> homeLocations = new HashMap<>();
+
+    private void rememberHomeLocation(ServerPlayer player) {
+        // Jangan nimpa kalo dia UDAH di arena -- misal rejoin di tengah game,
+        // yang kecatet nanti malah posisi di dalem arena, bukan rumah aslinya.
+        if (player.level().dimension().equals(ArenaDimension.ARENA)) return;
+        homeLocations.put(player.getUUID(), new HomeLocation(
+                player.level().dimension(),
+                player.getX(), player.getY(), player.getZ(),
+                player.getYRot(), player.getXRot()));
+    }
+
+    /** Balikin satu peserta ke tempat dia sebelum ditarik ke arena. */
+    private void sendPlayerHome(MinecraftServer server, ServerPlayer player) {
+        HomeLocation home = homeLocations.remove(player.getUUID());
+        if (player.level().dimension().equals(ArenaDimension.ARENA)) {
+            ServerLevel target = home != null ? server.getLevel(home.dimension()) : null;
+            if (target == null) {
+                // Gak kecatet (atau dimensinya udah gak ada) -- jangan
+                // ditinggal nyangkut di arena, buang ke spawn overworld.
+                target = server.overworld();
+                BlockPos spawn = target.getSharedSpawnPos();
+                player.teleportTo(target, spawn.getX() + 0.5, spawn.getY(), spawn.getZ() + 0.5,
+                        player.getYRot(), player.getXRot());
+                return;
+            }
+            player.teleportTo(target, home.x(), home.y(), home.z(), home.yaw(), home.pitch());
+        }
+    }
+
     private void teleportPlayersAndDecorateArena(MinecraftServer server) {
-        ServerLevel level = server.overworld();
+        ServerLevel level = ArenaDimension.level(server);
 
         List<UUID> allPlayers = new ArrayList<>(registeredPlayers);
         for (UUID uuid : allPlayers) {
             ServerPlayer player = server.getPlayerList().getPlayer(uuid);
             if (player != null) {
-                player.teleportTo(ARENA_TELEPORT_POS.getX() + 0.5, ARENA_TELEPORT_POS.getY(),
-                        ARENA_TELEPORT_POS.getZ() + 0.5);
+                rememberHomeLocation(player);
+                // Versi 5-argumen yang ada ServerLevel-nya: arena ada di
+                // dimensi sendiri, jadi ini pindah dimensi, bukan cuma pindah
+                // koordinat.
+                player.teleportTo(level,
+                        ARENA_TELEPORT_POS.getX() + 0.5, ARENA_TELEPORT_POS.getY(),
+                        ARENA_TELEPORT_POS.getZ() + 0.5, player.getYRot(), player.getXRot());
             }
         }
 
@@ -1858,7 +1910,7 @@ public class GameManager {
         ServerPlayer player = server.getPlayerList().getPlayer(ownerUuid);
         if (player == null) return;
 
-        spawnOwnerHead(server.overworld(), ownerUuid, getPlayerName(ownerUuid), player, placement.wall(), placement.columns());
+        spawnOwnerHead(ArenaDimension.level(server), ownerUuid, getPlayerName(ownerUuid), player, placement.wall(), placement.columns());
     }
 
     // ---------- Handle player left/rejoin di tengah game ----------

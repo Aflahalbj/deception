@@ -1,5 +1,6 @@
 package com.deception.command;
 
+import com.deception.game.ArenaDimension;
 import com.deception.game.GameManager;
 import com.deception.game.PresentationManager;
 import com.deception.game.Role;
@@ -11,6 +12,8 @@ import com.mojang.brigadier.suggestion.SuggestionProvider;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
@@ -366,6 +369,31 @@ public class ModCommands {
                             }
                             return 1;
                         }))
+                // Bangun arena dari structure NBT yang dibundel di jar --
+                // lihat ArenaDimension buat alur lengkapnya.
+                .then(literal("generatemap")
+                        .requires(src -> src.hasPermission(2))
+                        .executes(ctx -> generateMap(ctx.getSource())))
+
+                // Lompat ke dimensi arena -- dipake pas mau bangun/ngedit
+                // arenanya, soalnya dimensi custom gak bisa dituju /tp biasa.
+                .then(literal("gotoarena")
+                        .requires(src -> src.hasPermission(2))
+                        .executes(ctx -> {
+                            if (!(ctx.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) {
+                                ctx.getSource().sendFailure(Component.literal("Command ini hanya bisa dijalankan oleh player."));
+                                return 0;
+                            }
+                            ServerLevel arena = ctx.getSource().getServer().getLevel(ArenaDimension.ARENA);
+                            if (arena == null) {
+                                ctx.getSource().sendFailure(Component.literal(
+                                        "Dimensi arena tidak terdaftar. Cek data/deception/dimension/arena.json."));
+                                return 0;
+                            }
+                            player.teleportTo(arena, 31.5, -60, 176.5, player.getYRot(), player.getXRot());
+                            return 1;
+                        }))
+
                 // Debug voice chat -- lihat VoiceDebugState.
                 .then(literal("voicedebug")
                         .requires(src -> src.hasPermission(2))
@@ -471,6 +499,43 @@ public class ModCommands {
         source.sendSuccess(() -> Component.literal(""), false);
         source.sendSuccess(() -> Component.literal("  " + entry.detail()).withStyle(ChatFormatting.WHITE), false);
         source.sendSuccess(() -> Component.literal(""), false);
+    }
+
+    /**
+     * Pasang ULANG world save arena dari jar, nimpa yang sekarang. Yang
+     * pemasangan otomatis pas server nyala ada di
+     * DeceptionMod#onServerAboutToStart -- command ini buat maksa nimpa,
+     * misal arenanya kadung keubah-ubah.
+     */
+    private static int generateMap(CommandSourceStack source) {
+        MinecraftServer server = source.getServer();
+
+        if (!ArenaDimension.isBundled()) {
+            source.sendFailure(Component.literal(
+                    "Belum ada world arena yang dibundel di mod ini. Lihat /deception help generatemap "
+                            + "untuk cara menaruhnya."));
+            return 0;
+        }
+
+        try {
+            if (!ArenaDimension.install(server, true)) {
+                source.sendFailure(Component.literal("Gagal memasang arena."));
+                return 0;
+            }
+        } catch (java.io.IOException e) {
+            source.sendFailure(Component.literal("Gagal memasang arena: " + e.getMessage()));
+            return 0;
+        }
+
+        source.sendSuccess(() -> Component.literal("Arena dipasang ulang ke world save.")
+                .withStyle(ChatFormatting.GREEN), true);
+        // Chunk arena yang TELANJUR ke-load masih versi lama di memori, dan
+        // pas server nge-save nanti dia bakal nimpa balik file yang barusan
+        // ditulis. Restart itu satu-satunya cara yang pasti bersih.
+        source.sendSuccess(() -> Component.literal(
+                        "  Restart server sekarang supaya arenanya benar-benar kebaca.")
+                .withStyle(ChatFormatting.YELLOW), false);
+        return 1;
     }
 
     private static int setVoiceDebug(CommandSourceStack source, boolean enabled) {

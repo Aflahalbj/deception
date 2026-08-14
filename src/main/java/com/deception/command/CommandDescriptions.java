@@ -60,6 +60,17 @@ public class CommandDescriptions {
                         + "\"presentation\" satuannya DETIK (5-300, default 30) buat jatah bicara PER ORANG. "
                         + "Dipanggil tanpa angka = cuma nampilin nilai default-nya.");
 
+        // ---------- Arena ----------
+        put("generatemap", "/deception generatemap", "OP",
+                "Pasang ULANG world arena dari dalam jar, nimpa yang sekarang -- dipakai kalau arenanya "
+                        + "kadung keubah dan mau dibalikin. Normalnya gak perlu dipanggil: arenanya "
+                        + "dipasang OTOMATIS pas server nyala kalau world save-nya belum punya. "
+                        + "Harus restart server setelahnya. Arena tinggal di dimensi sendiri "
+                        + "(deception:arena), jadi gak pernah nimpa dunia pemain.");
+        put("gotoarena", "/deception gotoarena", "OP",
+                "Lompat ke dimensi arena. Perlu command sendiri soalnya dimensi custom gak bisa "
+                        + "dituju /tp biasa. Dipakai waktu mau bangun atau ngedit arenanya.");
+
         // ---------- Kontrol game ----------
         put("startgame", "/deception startgame", "OP",
                 "Mulai game. Syaratnya: peserta 4-12 orang dan SEMUANYA lagi online. "

@@ -841,7 +841,7 @@ public class PresentationManager {
         GameManager.get().broadcastActionBarToAll(Component.empty());
         queueEndGame(
                 murdererWon
-                        ? Component.literal("PENJAHAT MENANG!").withStyle(ChatFormatting.DARK_RED)
+                        ? Component.literal("PEMBUNUH MENANG!").withStyle(ChatFormatting.DARK_RED)
                         : Component.literal("TIM PENYELIDIK MENANG!").withStyle(ChatFormatting.GREEN),
                 Component.literal(message).withStyle(murdererWon ? ChatFormatting.RED : ChatFormatting.GREEN),
                 murdererWon);
@@ -849,8 +849,8 @@ public class PresentationManager {
 
     /** Fallback: ronde 3 abis tanpa ada confession yang berhasil -- penjahat langsung menang. */
     public void onRoundsExhausted(MinecraftServer server) {
-        queueEndGame(Component.literal("PENJAHAT MENANG!").withStyle(ChatFormatting.DARK_RED),
-                Component.literal("Ronde 3 berakhir tanpa ada yang berhasil menyelesaikan kasus. Penjahat menang.").withStyle(ChatFormatting.RED), true);
+        queueEndGame(Component.literal("PEMBUNUH MENANG!").withStyle(ChatFormatting.DARK_RED),
+                Component.literal("Ronde 3 berakhir tanpa ada yang berhasil menyelesaikan kasus. Pembunuh menang.").withStyle(ChatFormatting.RED), true);
     }
 
     /** /deception skipfs -- testing, biar gak perlu naro paper beneran buat mulai diskusi. */
