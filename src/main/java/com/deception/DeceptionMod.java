@@ -158,6 +158,31 @@ public class DeceptionMod {
 
         if (GameManager.get().onMurdererClickClue(player, level, event.getPos())) {
             event.setCanceled(true);
+            return;
+        }
+
+        // Lab Technician nunjuk 1 item buat ditanyain ke FS (fase Allies).
+        if (GameManager.get().onLabTechClickClue(player, level, event.getPos())) {
+            event.setCanceled(true);
+        }
+    }
+
+    // Inside Man nunjuk orang yang badge-nya bakal dicabut, caranya klik
+    // kanan orangnya langsung (fase Allies) -- lihat
+    // GameManager#onInsideManClickPlayer.
+    @SubscribeEvent
+    public void onEntityInteract(PlayerInteractEvent.EntityInteract event) {
+        if (event.getLevel().isClientSide()) return;
+        // Client nyoba tangan kanan DULU, dan kalau hasilnya PASS dia nyoba
+        // tangan kiri juga -- dua-duanya nyampe server sebagai event terpisah.
+        // Cancel doang gak nyetop itu (cancellation result default-nya PASS),
+        // jadi tanpa filter ini tiap klik keproses dua kali.
+        if (event.getHand() != net.minecraft.world.InteractionHand.MAIN_HAND) return;
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        if (!(event.getTarget() instanceof ServerPlayer target)) return;
+
+        if (GameManager.get().onInsideManClickPlayer(player, target)) {
+            event.setCanceled(true);
         }
     }
 

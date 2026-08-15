@@ -90,6 +90,10 @@ public class ModNetworking {
                 RoleVisibleHudPacket::encode,
                 RoleVisibleHudPacket::decode,
                 RoleVisibleHudPacket::handle);
+        CHANNEL.registerMessage(packetId++, SelectionHudPacket.class,
+                SelectionHudPacket::encode,
+                SelectionHudPacket::decode,
+                SelectionHudPacket::handle);
     }
 
     public static void sendBlindfoldState(ServerPlayer player, boolean closing) {
@@ -176,5 +180,15 @@ public class ModNetworking {
     /** HUD role sendiri di pojok kanan atas -- lihat GameManager#sendRoleVisibleHud. */
     public static void sendRoleVisibleHud(ServerPlayer player, RoleVisibleHudPacket packet) {
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+    }
+
+    /** Panel pilihan di kiri-tengah layar -- lihat init/SelectionOverlay. */
+    public static void sendSelectionHud(ServerPlayer player, SelectionHudPacket packet) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+    }
+
+    /** Copot panel pilihan dari layar player ini. */
+    public static void clearSelectionHud(ServerPlayer player) {
+        sendSelectionHud(player, SelectionHudPacket.hidden());
     }
 }

@@ -31,6 +31,12 @@ public class SettingActionPacket {
         CYCLE_ACCOMPLICE,
         /** Muter status witness. */
         CYCLE_WITNESS,
+        /** Muter status protective detail. */
+        CYCLE_PROTECTIVE_DETAIL,
+        /** Muter status lab technician. */
+        CYCLE_LAB_TECHNICIAN,
+        /** Muter status inside man. */
+        CYCLE_INSIDE_MAN,
         /** Paksa role satu player. {@code amount} = ordinal Role, -1 = balik ke auto. */
         SET_PLAYER_ROLE,
         /** Nyalain/matiin HUD role sendiri di pojok kanan atas layar peserta. */
@@ -105,6 +111,9 @@ public class SettingActionPacket {
             }
             case CYCLE_ACCOMPLICE -> cycleCustomRole(Role.accomplice, game.getAccompliceOverride());
             case CYCLE_WITNESS -> cycleCustomRole(Role.witness, game.getWitnessOverride());
+            case CYCLE_PROTECTIVE_DETAIL -> cycleCustomRole(Role.protective_detail, game.getProtectiveDetailOverride());
+            case CYCLE_LAB_TECHNICIAN -> cycleCustomRole(Role.lab_technician, game.getLabTechnicianOverride());
+            case CYCLE_INSIDE_MAN -> cycleCustomRole(Role.inside_man, game.getInsideManOverride());
             case TOGGLE_ROLE_VISIBLE -> game.setRoleVisible(server, !game.isRoleVisible());
             case SET_PLAYER_ROLE -> {
                 if (msg.playerName.isEmpty()) return;
@@ -135,14 +144,18 @@ public class SettingActionPacket {
             GameManager.get().setCustomRole(role, value);
         }
 
-        // Kalau role-nya jadi gak kepake, lepas player yang terlanjur dipaksa
-        // ke situ. Kalau enggak, bisa nyangkut kondisi yang saling
-        // bertentangan: witness nonaktif tapi ada player yang di-set witness.
+        // Lepas SEMUA player yang terlanjur dipaksa ke role yang sekarang
+        // jatahnya 0. Sengaja disapu semua role, bukan cuma yang barusan
+        // di-toggle: matiin Witness ikut matiin Protective Detail (dia gak
+        // punya siapa-siapa buat diliat), jadi kalau cuma role yang di-toggle
+        // yang dicek, bisa nyangkut player yang dipaksa jadi Protective
+        // Detail padahal role-nya udah gak kepake.
         SettingSnapshot after = SettingSnapshot.capture();
-        if (after.roleCapacity().getOrDefault(role, 0) > 0) return;
+        var capacity = after.roleCapacity();
 
         for (SettingSnapshot.PlayerEntry entry : after.players()) {
-            if (entry.role() == role) {
+            Role forced = entry.role();
+            if (forced != null && capacity.getOrDefault(forced, 0) == 0) {
                 GameManager.get().clearPlayerRole(entry.name());
             }
         }

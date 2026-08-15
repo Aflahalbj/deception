@@ -18,6 +18,12 @@ import java.util.Map;
  * <p>Ukuran gambar dicatat manual karena Minecraft gak nyediain cara baca
  * dimensi texture yang murah pas render. Kalau gambarnya diganti dengan
  * ukuran beda, angka di sini HARUS ikut diubah, kalau enggak fotonya gepeng.
+ *
+ * <p>{@code image} boleh null: role yang fotonya belum dibikin dirender
+ * tanpa kotak foto sama sekali (teksnya dapet ruang penuh) -- sengaja gitu
+ * biar gak muncul texture "missing" ungu-hitam. Begitu PNG-nya ada di
+ * {@code assets/deception/textures/gui/}, tinggal ganti null-nya jadi
+ * {@code image("nama_file")} plus lebar & tinggi asli gambarnya.
  */
 public final class RoleInfo {
 
@@ -119,6 +125,60 @@ public final class RoleInfo {
 
                 Jika semua badge habis tanpa ada satu pun tebakan yang benar, \
                 tim murderer yang menang."""));
+
+        // ---------- Role tambahan: expansion "Undercover Allies" ----------
+        // Fotonya belum ada, jadi image-nya sengaja null (lihat javadoc class).
+
+        ENTRIES.put(Role.protective_detail, new Entry(
+                image("protective_detail"), 490, 280,
+                """
+                Di malam hari, tepat setelah Witness menutup mata, kamu membuka \
+                mata dan melihat satu orang bersinar: itulah Witness. Kamu tahu \
+                siapa dia, tapi dia tidak tahu siapa kamu.
+
+                Kamu tidak dapat informasi lain sama sekali, tidak tahu means, \
+                clue, apalagi siapa Murderer. Nilaimu ada di akhir permainan: \
+                kalau tim investigator berhasil menuduh dengan benar, Murderer \
+                dapat satu tembakan terakhir untuk membunuh Witness.
+
+                Tugasmu membuat Murderer yakin KAMU yang Witness. Bicaralah \
+                seperti orang yang tahu sesuatu, tarik kecurigaan ke dirimu, dan \
+                biarkan Witness asli tetap aman. Kamu menang bersama tim \
+                investigator."""));
+
+        ENTRIES.put(Role.lab_technician, new Entry(
+                image("lab_technician"), 490, 275,
+                """
+                Kamu Investigator dengan satu akses tambahan ke laboratorium. \
+                Setelah presentasi ronde 1 selesai, semua orang menutup mata \
+                lagi dan kamu membuka mata sendirian.
+
+                Klik kanan satu benda apa pun di TKP, milik siapa pun, lalu \
+                konfirmasi. Forensic Scientist menjawab apakah benda itu benar \
+                dipakai di TKP atau tidak, dan hanya kamu yang menerima \
+                jawabannya.
+
+                Jatahnya cuma sekali seumur permainan, jadi pilih benda yang \
+                paling menentukan, dan hati-hati saat membagikan hasilnya, \
+                terlalu terang-terangan bikin Murderer tahu arah penyelidikanmu. \
+                Kamu menang bersama tim investigator."""));
+
+        ENTRIES.put(Role.inside_man, new Entry(
+                image("inside_man"), 500, 333,
+                """
+                Kamu orang dalam yang bekerja untuk Murderer, tapi kamu TIDAK \
+                tahu siapa dia dan dia tidak tahu siapa kamu. Dari luar kamu \
+                terlihat persis seperti Investigator biasa.
+
+                Setelah Lab Technician menutup mata, giliranmu membuka mata. \
+                Klik kanan satu orang, siapa pun boleh, termasuk dirimu sendiri, \
+                lalu konfirmasi. Begitu semua orang membuka mata, police badge \
+                orang itu hilang dan dia kehilangan haknya menuduh sampai akhir \
+                permainan.
+
+                Semakin sedikit badge yang tersisa, semakin cepat tim \
+                investigator kehabisan kesempatan. Kamu menang bersama tim \
+                murderer."""));
     }
 
     public static Entry get(Role role) {

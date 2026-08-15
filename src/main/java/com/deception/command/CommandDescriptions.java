@@ -47,9 +47,13 @@ public class CommandDescriptions {
         put("setting", "/deception setting", "OP",
                 "Buka GUI setting. Isinya sama persis kayak subcommand settimer/customrole/setrole, "
                         + "GUI-nya cuma pembungkus biar gak perlu ngapal command.");
-        put("customrole", "/deception customrole <witness|accomplice> <add|remove>", "OP",
-                "Paksa role opsional (witness / accomplice) buat MASUK atau GAK MASUK ke komposisi, "
-                        + "nimpa aturan otomatis yang normalnya nentuin dari jumlah pemain.");
+        put("customrole",
+                "/deception customrole <witness|accomplice|protective_detail|lab_technician|inside_man> <add|remove>", "OP",
+                "Paksa role opsional buat MASUK atau GAK MASUK ke komposisi, nimpa aturan otomatis "
+                        + "yang normalnya nentuin dari jumlah pemain. Default otomatisnya: accomplice mulai 6 "
+                        + "pemain, witness mulai 7, lab_technician mulai 7, inside_man mulai 8. "
+                        + "protective_detail default MATI di semua jumlah pemain (rulebook resminya gak "
+                        + "ngasih angka, cuma bilang opsional) dan cuma jalan kalau witness aktif.");
         put("setrole", "/deception setrole <playername> <role>", "OP",
                 "Kunci satu player ke role tertentu. Sisanya tetep diacak seperti biasa. "
                         + "Dipake buat ngetes, atau kalo emang mau ngatur pembagian.");
@@ -70,6 +74,11 @@ public class CommandDescriptions {
         put("gotoarena", "/deception gotoarena", "OP",
                 "Lompat ke dimensi arena. Perlu command sendiri soalnya dimensi custom gak bisa "
                         + "dituju /tp biasa. Dipakai waktu mau bangun atau ngedit arenanya.");
+        put("gotoworld", "/deception gotoworld", "OP",
+                "Jalan pulang dari arena: pindahin kamu ke titik spawn overworld. Pasangan "
+                        + "/deception gotoarena, dipakai kalau nyangkut di dimensi arena di luar alur game "
+                        + "(kalau lewat alur normal, /deception stopgame udah otomatis mulangin semua peserta "
+                        + "ke tempat mereka sebelum ditarik ke arena).");
 
         // ---------- Kontrol game ----------
         put("startgame", "/deception startgame", "OP",
@@ -81,26 +90,37 @@ public class CommandDescriptions {
 
         // ---------- Dipake selagi game jalan ----------
         put("skip", "/deception skip", "Semua player",
-                "Skip fase yang lagi jalan. Pas DISKUSI: ini vote (bisa di-toggle), diskusi baru dilewatin "
-                        + "kalo mayoritas peserta ONLINE udah vote. Pas PRESENTASI: langsung dilewatin tanpa vote, "
-                        + "tapi cuma boleh sama yang lagi dapet giliran bicara, Forensic Scientist, atau OP.");
+                "Skip fase yang lagi jalan. Pas DISKUSI: ini vote (bisa di-toggle), dan diskusi baru "
+                        + "dilewatin kalo SEMUA peserta online yang bukan Forensic Scientist udah vote -- "
+                        + "satu orang yang belum setuju cukup buat nahan. FS gak ikut hitungan sama sekali. "
+                        + "Pas PRESENTASI: langsung dilewatin tanpa vote, tapi cuma boleh sama yang lagi dapet "
+                        + "giliran bicara, Forensic Scientist, atau OP.");
         put("skipreveal", "/deception skipreveal", "OP atau Forensic Scientist",
-                "Lewatin fase malam (night). Kalo murderer belum sempet milih means & clue, "
-                        + "pilihannya diacak otomatis dulu biar game tetep bisa lanjut.");
+                "Majuin SATU tahap fase malam (night) atau fase Allies yang lagi jalan. Kalo murderer "
+                        + "belum sempet milih means & clue, pilihannya diacak otomatis dulu biar game tetep "
+                        + "bisa lanjut; giliran witness / protective detail / lab technician / inside man "
+                        + "yang di-skip cuma dilewatin, gak diacak.");
         put("skipfs", "/deception skipfs", "OP atau Forensic Scientist",
                 "Paksa diskusi mulai tanpa nunggu Forensic Scientist nempel investigation paper beneran. "
                         + "Buat testing.");
         put("confirm", "/deception confirm", "Semua player",
-                "Konfirmasi pilihan kamu di fase malam -- means & clue buat murderer, "
-                        + "atau \"udah liat\" buat witness. Biasanya diklik dari tombol di chat, "
+                "Konfirmasi pilihan kamu di fase malam atau fase Allies -- means & clue buat murderer, "
+                        + "\"udah liat\" buat witness & protective detail, item yang mau ditanyain buat lab "
+                        + "technician, atau target badge buat inside man. Biasanya diklik dari tombol di chat, "
                         + "command ini cadangan kalo tombolnya kelewat.");
+        put("target", "/deception target <playername>", "Inside Man",
+                "Pilih orang yang badge-nya bakal dicabut, tanpa harus klik kanan orangnya. Cadangan "
+                        + "buat kasus targetnya lagi gak keliatan dari tempat kamu berdiri. Cuma jalan pas "
+                        + "giliran Inside Man di fase Allies.");
         put("true", "/deception true", "Forensic Scientist",
-                "Jawaban Forensic Scientist pas ada yang pake police badge: tebakannya BENAR. "
-                        + "Kalo gak ada witness, tim penyelidik langsung menang; kalo ada, "
-                        + "murderer masih dapet satu tembakan terakhir buat ngebungkam witness.");
+                "Jawaban Forensic Scientist. Pas fase Allies: jawaban buat pertanyaan Lab Technician, "
+                        + "artinya item yang ditunjuk EMANG dipakai di TKP. Di luar itu: jawaban buat yang "
+                        + "pake police badge, tebakannya BENAR -- kalo gak ada witness tim penyelidik langsung "
+                        + "menang, kalo ada, murderer masih dapet satu tembakan terakhir buat ngebungkam witness.");
         put("false", "/deception false", "Forensic Scientist",
-                "Jawaban Forensic Scientist pas ada yang pake police badge: tebakannya SALAH. "
-                        + "Kalo police badge udah habis kepake semua, pembunuh langsung menang.");
+                "Kebalikan /deception true. Pas fase Allies: item yang ditunjuk Lab Technician BUKAN "
+                        + "bagian dari solusi. Di luar itu: tebakan pemegang police badge SALAH -- kalo badge-nya "
+                        + "udah habis kepake semua, pembunuh langsung menang.");
 
         // ---------- Info ----------
         put("roleinfo", "/deception roleinfo [namarole]", "Semua player",

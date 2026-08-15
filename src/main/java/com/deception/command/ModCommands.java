@@ -10,6 +10,7 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 import net.minecraft.ChatFormatting;
+import net.minecraft.core.BlockPos;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.server.MinecraftServer;
@@ -111,12 +112,11 @@ public class ModCommands {
 
                 .then(literal("customrole")
                         .requires(src -> src.hasPermission(2))
-                        .then(literal("witness")
-                                .then(literal("add").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.witness, true)))
-                                .then(literal("remove").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.witness, false))))
-                        .then(literal("accomplice")
-                                .then(literal("add").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.accomplice, true)))
-                                .then(literal("remove").executes(ctx -> toggleCustomRole(ctx.getSource(), Role.accomplice, false)))))
+                        .then(customRoleNode("witness", Role.witness))
+                        .then(customRoleNode("accomplice", Role.accomplice))
+                        .then(customRoleNode("protective_detail", Role.protective_detail))
+                        .then(customRoleNode("lab_technician", Role.lab_technician))
+                        .then(customRoleNode("inside_man", Role.inside_man)))
 
                 .then(literal("roleinfo")
                         .then(argument("namarole", StringArgumentType.word())
@@ -351,24 +351,29 @@ public class ModCommands {
                 // kanan police_badge) -- lihat PresentationManager#resolveConfession.
                 .then(literal("true")
                         .requires(ModCommands::isOpOrForensicScientist)
-                        .executes(ctx -> {
-                            boolean ok = PresentationManager.get().resolveConfession(true, ctx.getSource().getServer());
-                            if (!ok) {
-                                ctx.getSource().sendFailure(Component.literal("Tidak ada confession yang sedang menunggu jawaban."));
-                                return 0;
-                            }
-                            return 1;
-                        }))
+                        .executes(ctx -> answerAsForensicScientist(ctx.getSource(), true)))
                 .then(literal("false")
                         .requires(ModCommands::isOpOrForensicScientist)
-                        .executes(ctx -> {
-                            boolean ok = PresentationManager.get().resolveConfession(false, ctx.getSource().getServer());
-                            if (!ok) {
-                                ctx.getSource().sendFailure(Component.literal("Tidak ada confession yang sedang menunggu jawaban."));
-                                return 0;
-                            }
-                            return 1;
-                        }))
+                        .executes(ctx -> answerAsForensicScientist(ctx.getSource(), false)))
+
+                // Inside Man nunjuk target tanpa harus klik kanan orangnya --
+                // cadangan kalo orangnya lagi gak keliatan. Dipicu tombol nama
+                // di chat, lihat GameManager#sendInsideManTargetList.
+                .then(literal("target")
+                        .then(argument("playername", StringArgumentType.word())
+                                .suggests(REGISTERED_PLAYERS)
+                                .executes(ctx -> {
+                                    if (!(ctx.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) {
+                                        ctx.getSource().sendFailure(Component.literal("Command ini hanya bisa dijalankan oleh player."));
+                                        return 0;
+                                    }
+                                    String name = StringArgumentType.getString(ctx, "playername");
+                                    if (!GameManager.get().onInsideManPickByName(player, name)) {
+                                        ctx.getSource().sendFailure(Component.literal("Sekarang bukan giliran kamu memilih target."));
+                                        return 0;
+                                    }
+                                    return 1;
+                                })))
                 // Bangun arena dari structure NBT yang dibundel di jar --
                 // lihat ArenaDimension buat alur lengkapnya.
                 .then(literal("generatemap")
@@ -384,13 +389,32 @@ public class ModCommands {
                                 ctx.getSource().sendFailure(Component.literal("Command ini hanya bisa dijalankan oleh player."));
                                 return 0;
                             }
-                            ServerLevel arena = ctx.getSource().getServer().getLevel(ArenaDimension.ARENA);
-                            if (arena == null) {
+                            if (!GameManager.teleportToArenaLobby(ctx.getSource().getServer(), player)) {
                                 ctx.getSource().sendFailure(Component.literal(
                                         "Dimensi arena tidak terdaftar. Cek data/deception/dimension/arena.json."));
                                 return 0;
                             }
-                            player.teleportTo(arena, 31.5, -60, 176.5, player.getYRot(), player.getXRot());
+                            return 1;
+                        }))
+
+                // Jalan pulang dari dimensi arena. Pasangan /deception gotoarena
+                // -- sama-sama perlu command sendiri soalnya dimensi custom gak
+                // bisa dituju /tp biasa, jadi tanpa ini gampang nyangkut di
+                // arena kalau masuk ke sana di luar alur game.
+                .then(literal("gotoworld")
+                        .requires(src -> src.hasPermission(2))
+                        .executes(ctx -> {
+                            if (!(ctx.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) {
+                                ctx.getSource().sendFailure(Component.literal("Command ini hanya bisa dijalankan oleh player."));
+                                return 0;
+                            }
+                            ServerLevel overworld = ctx.getSource().getServer().overworld();
+                            BlockPos spawn = overworld.getSharedSpawnPos();
+                            player.teleportTo(overworld,
+                                    spawn.getX() + 0.5, spawn.getY(), spawn.getZ() + 0.5,
+                                    overworld.getSharedSpawnAngle(), 0.0F);
+                            ctx.getSource().sendSuccess(() -> Component.literal("Kamu dipindah ke spawn overworld.")
+                                    .withStyle(ChatFormatting.GREEN), false);
                             return 1;
                         }))
 
@@ -552,6 +576,34 @@ public class ModCommands {
                         + (visible ? " -- role masing-masing muncul di pojok kanan atas layar." : ""))
                 .withStyle(visible ? ChatFormatting.GREEN : ChatFormatting.YELLOW), true);
         return 1;
+    }
+
+    /**
+     * /deception true &amp; /deception false. SATU tombol dipake dua fase yang
+     * beda, jadi urutannya penting: pertanyaan Lab Technician (fase Allies)
+     * dicoba DULUAN, baru jatuh ke jawaban confession police badge. Dua-duanya
+     * gak mungkin nunggu barengan -- fase Allies mustahil ada confession yang
+     * lagi ngegantung (lihat PresentationManager#tryStartConfession).
+     */
+    private static int answerAsForensicScientist(CommandSourceStack source, boolean answer) {
+        if (GameManager.get().answerLabTechnician(answer)) {
+            source.sendSuccess(() -> Component.literal("Jawaban dikirim ke Lab Technician.")
+                    .withStyle(ChatFormatting.GREEN), false);
+            return 1;
+        }
+        if (PresentationManager.get().resolveConfession(answer, source.getServer())) {
+            return 1;
+        }
+        source.sendFailure(Component.literal("Tidak ada pertanyaan yang sedang menunggu jawaban."));
+        return 0;
+    }
+
+    /** Satu cabang /deception customrole &lt;role&gt; &lt;add|remove&gt;. */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> customRoleNode(
+            String literalName, Role role) {
+        return literal(literalName)
+                .then(literal("add").executes(ctx -> toggleCustomRole(ctx.getSource(), role, true)))
+                .then(literal("remove").executes(ctx -> toggleCustomRole(ctx.getSource(), role, false)));
     }
 
     private static int toggleCustomRole(CommandSourceStack source, Role role, boolean add) {

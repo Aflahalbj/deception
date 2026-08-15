@@ -5,7 +5,13 @@ public enum Role {
     murderer("Murderer"),
     accomplice("Accomplice"),
     witness("Witness"),
-    investigator("Investigator");
+    investigator("Investigator"),
+    // Tiga role tambahan dari expansion "Undercover Allies". SENGAJA ditaruh
+    // paling belakang: SettingSnapshot.PlayerEntry ngirim role lewat
+    // ordinal(), jadi urutan role lama gak boleh geser.
+    protective_detail("Protective Detail"),
+    lab_technician("Lab Technician"),
+    inside_man("Inside Man");
 
     private final String displayName;
 

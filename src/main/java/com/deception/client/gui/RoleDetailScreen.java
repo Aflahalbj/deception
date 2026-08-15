@@ -63,8 +63,15 @@ public class RoleDetailScreen extends DeceptionScreen {
 
     /** Aspect-fit foto ke dalam jatahnya, jadi rasio aslinya kejaga. */
     private void layoutPhoto() {
-        if (entry == null) {
+        // Role yang fotonya belum ada (lihat RoleInfo) dirender tanpa kotak
+        // foto sama sekali -- teksnya yang dapet seluruh ruang.
+        if (entry == null || entry.image() == null) {
             photoW = photoH = 0;
+            // Bikin layoutText() mulai persis di contentY: dia ngitung
+            // textTop dari photoY + photoH + PHOTO_BORDER, jadi tanpa ini
+            // photoY-nya nol dan teksnya nempel di ujung atas layar.
+            photoX = contentX;
+            photoY = contentY - PHOTO_BORDER;
             return;
         }
         int maxHeight = Math.round(contentH * PHOTO_MAX_HEIGHT);
@@ -139,7 +146,7 @@ public class RoleDetailScreen extends DeceptionScreen {
     }
 
     private void renderPhoto(GuiGraphics g) {
-        if (entry == null || photoW <= 0) return;
+        if (entry == null || entry.image() == null || photoW <= 0) return;
 
         // Bingkai gelap tipis, ikut membulat, biar fotonya kebaca sebagai
         // foto yang ditempel di papan -- bukan gambar yang ngambang.

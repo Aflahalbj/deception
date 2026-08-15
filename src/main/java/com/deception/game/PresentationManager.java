@@ -56,6 +56,19 @@ public class PresentationManager {
     // Sama persis kayak dipake InvestigationPaperItem#place() buat baca gate
     // "belum boleh ditempel" -- HARUS string yang sama di kedua tempat.
     public static final String PLACEMENT_LOCKED_TAG = "ForensicPlacementLocked";
+    /**
+     * Gate KEDUA, khusus selama fase Allies: FS gak ikut tutup mata, jadi
+     * tanpa ini dia bebas nempel paper selagi yang lain merem -- dan itu
+     * bukan cuma gak sopan, tapi bikin onForensicPaperPlaced kepanggil di
+     * tengah fase (badge kebagi + title "DISKUSI DIMULAI" kekirim ke orang
+     * yang lagi tutup mata, dan timer diskusi ronde 2 keburu jalan).
+     *
+     * <p>Sengaja tag TERPISAH dari PLACEMENT_LOCKED_TAG, bukan dipakai
+     * bergantian: paper ronde 2 masih harus tetap kekunci sama gate lamanya
+     * setelah fase Allies kelar, jadi dua kunci ini harus bisa hidup bareng
+     * di stack yang sama tanpa saling nimpa.
+     */
+    public static final String ALLIES_LOCKED_TAG = "ForensicAlliesLocked";
     // Nandain totem_of_undying MANA yang beneran "police badge" kita (biar
     // gak ke-detect asal ada totem beneran di tangan siapapun).
     private static final String BADGE_TAG = "DeceptionPoliceBadge";
@@ -121,6 +134,42 @@ public class PresentationManager {
 
     public boolean isDiscussionStarted() {
         return discussionStarted;
+    }
+
+    /** Ronde yang lagi jalan (1..MAX_ROUNDS). Dibaca GameManager buat nentuin kapan fase Allies jalan. */
+    public int getRound() {
+        return round;
+    }
+
+    /** Dia lagi megang police badge yang belum kepake? */
+    public boolean hasBadge(UUID uuid) {
+        return badgeHolders.contains(uuid);
+    }
+
+    /**
+     * Cabut badge seseorang di luar jalur confession -- dipakai Inside Man di
+     * fase Allies. Ikut dicatet di {@code usedBadges} biar dia GAK dikasih
+     * badge baru pas ronde berikutnya mulai (lihat onForensicPaperPlaced) dan
+     * gak balik lagi bawa badge pas rejoin (lihat onPlayerRejoined).
+     *
+     * @return false kalo dia emang udah gak punya badge (gak ada yang dicabut).
+     */
+    public boolean revokeBadge(MinecraftServer server, UUID uuid) {
+        if (!badgeHolders.contains(uuid)) return false;
+        usedBadges.add(uuid);
+
+        ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+        if (player != null) {
+            clearBadge(player);
+        } else {
+            // Lagi offline -- inventory-nya gak bisa disentuh sekarang, tapi
+            // status holder-nya WAJIB dicabut sekarang juga. Sisa item di
+            // inventory offline-nya dibersihin onPlayerRejoined lewat cabang
+            // usedBadges.
+            badgeHolders.remove(uuid);
+            ModNetworking.broadcastPoliceBadgeHolder(uuid, false);
+        }
+        return true;
     }
 
     public void setPresentasiTurnSeconds(int seconds) {
@@ -265,36 +314,55 @@ public class PresentationManager {
         return SkipResult.PRESENTASI_SKIPPED;
     }
 
-    /** @return false kalo dipanggil di luar fase diskusi yang lagi berjalan (command bakal kasih tau gagal). */
+    /**
+     * Vote skip diskusi. Butuh SUARA BULAT: semua peserta online yang bukan
+     * Forensic Scientist harus vote, bukan cuma mayoritas -- diskusi itu
+     * jatah utama tim penyelidik, jadi satu orang yang masih mau menganalisis
+     * cukup buat nahan.
+     *
+     * <p>FS sengaja gak ikut hitungan sama sekali (bukan cuma "gak wajib"):
+     * dia gak boleh bicara selama diskusi, jadi gak masuk akal dia ikut
+     * mutusin kapan diskusinya cukup.
+     *
+     * @return false kalo dipanggil di luar fase diskusi yang lagi berjalan
+     *         (command bakal kasih tau gagal).
+     */
     private boolean voteSkip(ServerPlayer player, MinecraftServer server) {
         if (GameManager.get().getState() != GameManager.State.DISCUSS || !discussionStarted) return false;
 
         UUID uuid = player.getUUID();
+        if (GameManager.get().getRoleAssignments().get(uuid) == Role.forensic_scientist) {
+            player.sendSystemMessage(Component.literal("Forensic Scientist tidak ikut voting skip diskusi.")
+                    .withStyle(ChatFormatting.RED));
+            return true;
+        }
+
         boolean nowVoting = skipVotes.add(uuid);
         if (!nowVoting) {
             skipVotes.remove(uuid);
         }
 
-        int onlineCount = 0;
+        int voterCount = 0;
         int votedCount = 0;
         for (UUID u : GameManager.get().getRegisteredPlayers()) {
             if (server.getPlayerList().getPlayer(u) == null) continue;
-            onlineCount++;
+            if (GameManager.get().getRoleAssignments().get(u) == Role.forensic_scientist) continue;
+            voterCount++;
             if (skipVotes.contains(u)) votedCount++;
         }
 
         Component msg = Component.literal(GameManager.get().getPlayerName(uuid)
                         + (nowVoting ? " vote SKIP diskusi" : " membatalkan vote skip")
-                        + " (" + votedCount + "/" + onlineCount + ")")
+                        + " (" + votedCount + "/" + voterCount + ")")
                 .withStyle(ChatFormatting.YELLOW);
         for (UUID u : GameManager.get().getRegisteredPlayers()) {
             ServerPlayer p = server.getPlayerList().getPlayer(u);
             if (p != null) p.sendSystemMessage(msg);
         }
 
-        if (onlineCount > 0 && votedCount > onlineCount / 2.0) {
+        if (voterCount > 0 && votedCount >= voterCount) {
             server.getPlayerList().broadcastSystemMessage(
-                    Component.literal("Voting skip berhasil! Diskusi dilewati.").withStyle(ChatFormatting.GREEN), false);
+                    Component.literal("Semua setuju! Diskusi dilewati.").withStyle(ChatFormatting.GREEN), false);
             GameManager.get().forceEndDiscussion(server);
         }
         return true;
@@ -462,6 +530,12 @@ public class PresentationManager {
     public boolean tryStartConfession(ServerPlayer player, MinecraftServer server) {
         ItemStack held = player.getMainHandItem();
         if (!isLockedItem(held) && !isLockedItem(player.getOffhandItem())) return false;
+        if (GameManager.get().getState() == GameManager.State.ALLIES) {
+            // Fase Allies semua orang lagi tutup mata -- badge gak boleh
+            // dipake nuduh di tengah-tengah itu. Tetep return true biar
+            // klik kanannya ketelen (gak nyalain animasi totem).
+            return true;
+        }
         if (shootoutActive) {
             // Fase shootout udah jalan -- kasusnya udah kelar ditebak, tinggal
             // nunggu tembakan murderer. Badge gak ada gunanya lagi di sini.
@@ -944,16 +1018,60 @@ public class PresentationManager {
      * Dipanggil GameManager pas presentasi 1 ronde kelar. @return true kalo
      * masih ada ronde berikutnya (GameManager balikin state ke DISCUSS),
      * false kalo udah ronde terakhir (GameManager lanjut ke RUNNING).
+     *
+     * @param givePaperNow false kalo abis ini masuk fase Allies duluan. Scene
+     *        tile baru + penghapusnya sengaja DITAHAN sampai fase itu kelar
+     *        (lihat {@link #giveDeferredRoundPaper}): kalau dikasih sekarang,
+     *        FS nerima item pas semua orang lagi tutup mata, dan bunyi/gerak
+     *        dia ngutak-ngatik inventory jadi bocoran gratis buat yang lain.
      */
-    public boolean advanceRound(MinecraftServer server) {
+    public boolean advanceRound(MinecraftServer server, boolean givePaperNow) {
         round++;
         if (round > MAX_ROUNDS) return false;
 
         discussionStarted = false;
         skipVotes.clear();
         roundTileRemoved = false;
-        giveRoundPaperAndRemover(server);
+        if (givePaperNow) giveRoundPaperAndRemover(server);
         return true;
+    }
+
+    /** Jatah yang ditahan {@link #advanceRound} -- dipanggil pas semua orang buka mata lagi. */
+    public void giveDeferredRoundPaper(MinecraftServer server) {
+        giveRoundPaperAndRemover(server);
+    }
+
+    /**
+     * Pasang/lepas {@link #ALLIES_LOCKED_TAG} di semua investigation paper
+     * yang lagi dipegang FS. Dipanggil pas fase Allies mulai & selesai, plus
+     * pas FS rejoin (biar yang lagi offline waktu itu tetep nyusul kondisi
+     * yang bener -- kalo enggak, paper-nya bisa kekunci selamanya).
+     *
+     * <p>Nyapu SEMUA slot inventory ({@code inventoryMenu.slots}) biar paper
+     * yang lagi diparkir di offhand/kotak crafting ikut kena.
+     */
+    public void syncAlliesPaperLock(ServerPlayer fsPlayer, boolean locked) {
+        for (Slot slot : fsPlayer.inventoryMenu.slots) {
+            ItemStack stack = slot.getItem();
+            if (stack.isEmpty() || stack.getItem() != ModItems.INVESTIGATION_PAPER.get()) continue;
+
+            if (locked) {
+                stack.getOrCreateTag().putBoolean(ALLIES_LOCKED_TAG, true);
+            } else if (stack.getTag() != null) {
+                stack.getTag().remove(ALLIES_LOCKED_TAG);
+            }
+        }
+        fsPlayer.inventoryMenu.broadcastChanges();
+    }
+
+    /** Cari FS yang lagi online, atau null. Dipake GameManager buat gate paper fase Allies. */
+    public ServerPlayer findOnlineForensicScientist(MinecraftServer server) {
+        for (var e : GameManager.get().getRoleAssignments().entrySet()) {
+            if (e.getValue() == Role.forensic_scientist) {
+                return server.getPlayerList().getPlayer(e.getKey());
+            }
+        }
+        return null;
     }
 
     private void giveRoundPaperAndRemover(MinecraftServer server) {

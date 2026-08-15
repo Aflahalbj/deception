@@ -6,8 +6,6 @@ import com.deception.init.ModBlocks;
 import com.deception.init.ModItems;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.world.level.Level;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.ClickEvent;
@@ -54,7 +52,7 @@ import java.util.*;
 public class GameManager {
 
     public enum State {
-        IDLE, COUNTDOWN, SHUFFLE, REVEAL_DELAY, NIGHT, DISCUSS, PRESENTASI, RUNNING
+        IDLE, COUNTDOWN, SHUFFLE, REVEAL_DELAY, NIGHT, DISCUSS, PRESENTASI, ALLIES, RUNNING
     }
 
     private static final GameManager INSTANCE = new GameManager();
@@ -72,6 +70,9 @@ public class GameManager {
     // override manual dari /customrole; null = pakai default tabel komposisi
     private Boolean accompliceOverride = null;
     private Boolean witnessOverride = null;
+    private Boolean protectiveDetailOverride = null;
+    private Boolean labTechnicianOverride = null;
+    private Boolean insideManOverride = null;
 
     // "random" atau nama player spesifik
     private String forensicScientistMode = "random";
@@ -102,22 +103,28 @@ public class GameManager {
     private int nightTicksElapsed;
     private int nightKillersWakeAt;
     private int nightWitnessRevealAt;
+    private int nightProtectiveDetailRevealAt;
     private int nightWakeAllAt;
     private int nightDoneAt;
     private final Set<UUID> nightBlindfolded = new HashSet<>();
     private final List<UUID> nightKillers = new ArrayList<>();
     private UUID nightWitnessUuid;
+    private UUID nightProtectiveDetailUuid;
     private boolean murdererConfirmed = false;
     private final Set<BlockPos> processedClicks = new HashSet<>();
     private long lastClickTick = 0;
     private int murdererAutoPickTicksLeft = 0;
     private int witnessAutoSkipTicksLeft = 0;
+    private int protectiveDetailAutoSkipTicksLeft = 0;
     private UUID leftMurdererUuid = null;
     private UUID leftWitnessUuid = null;
+    private UUID leftProtectiveDetailUuid = null;
     private boolean hasMurdererLeft = false;
     private boolean hasWitnessLeft = false;
+    private boolean hasProtectiveDetailLeft = false;
     private String leftMurdererName = "";
     private String leftWitnessName = "";
+    private String leftProtectiveDetailName = "";
 
     // ---------- Murderer pilih item means/clue asli pas night ----------
     // 2 posisi: 1 untuk means, 1 untuk clue
@@ -130,6 +137,12 @@ public class GameManager {
     // ---------- Witness konfirmasi udah liat (kaya murdererConfirmed tapi buat witness) ----------
     private boolean witnessConfirmed = false;
 
+    // ---------- Protective Detail: giliran terakhir fase malam, liat siapa Witness ----------
+    private boolean protectiveDetailConfirmed = false;
+    private boolean protectiveDetailWindowOpen = false;
+    private int protectiveDetailAutoSkipAt = Integer.MAX_VALUE;
+    private int protectiveDetailConfirmReadyAt = Integer.MAX_VALUE;
+
     // ---------- Handle murderer/witness left pas lagi "buka mata" ----------
     public static final int DEFAULT_OFFLINE_REVEAL_SECONDS = 90;
     // Bisa di-override /deception setting -> Set Timer -> Offline Reveal.
@@ -141,6 +154,40 @@ public class GameManager {
     // Tick pas witness baru boleh /deception confirm (3 detik abis matanya
     // kebuka & killer nyala) & tick pas prompt "[KONFIRMASI]" dikirim ke chat.
     private int witnessConfirmReadyAt = Integer.MAX_VALUE;
+
+    // ---------- Fase Allies (antara ronde 1 & ronde 2) ----------
+    // Urutannya persis kayak rulebook Undercover Allies: semua tutup mata ->
+    // Lab Technician nanya 1 item ke FS -> LT tutup mata -> Inside Man nunjuk
+    // 1 orang buat dicabut badge-nya -> IM tutup mata -> semua buka mata
+    // (badge-nya baru beneran dicabut di sini) -> ronde 2 mulai.
+    private int alliesTicksElapsed;
+    private int alliesLabTechWakeAt;
+    private int alliesInsideManWakeAt;
+    private int alliesWakeAllAt;
+    private int alliesDoneAt;
+    private UUID alliesLabTechUuid;
+    private UUID alliesInsideManUuid;
+
+    private boolean labTechWindowOpen = false;
+    private boolean labTechConfirmed = false;
+    /** true selagi pertanyaan LT nunggu jawaban [BENAR]/[SALAH] dari FS. */
+    private boolean labTechAwaitingAnswer = false;
+    private BlockPos labTechSelectedPos = null;
+    private BlockPos labTechSelectedBacking = null;
+    private int labTechAutoSkipAt = Integer.MAX_VALUE;
+    private int labTechAutoSkipTicksLeft = 0;
+    private UUID leftLabTechUuid = null;
+    private boolean hasLabTechLeft = false;
+    private String leftLabTechName = "";
+
+    private boolean insideManWindowOpen = false;
+    private boolean insideManConfirmed = false;
+    private UUID insideManTargetUuid = null;
+    private int insideManAutoSkipAt = Integer.MAX_VALUE;
+    private int insideManAutoSkipTicksLeft = 0;
+    private UUID leftInsideManUuid = null;
+    private boolean hasInsideManLeft = false;
+    private String leftInsideManName = "";
 
     // reverse-lookup posisi block means/clue -> UUID pemilik cluster-nya
     private final Map<BlockPos, UUID> clusterOwnerByPos = new HashMap<>();
@@ -259,26 +306,35 @@ public class GameManager {
     // ---------- Custom role toggle ----------
 
     public void setCustomRole(Role role, boolean enabled) {
-        if (role == Role.accomplice) {
-            accompliceOverride = enabled;
-        } else if (role == Role.witness) {
-            witnessOverride = enabled;
+        switch (role) {
+            case accomplice -> accompliceOverride = enabled;
+            case witness -> witnessOverride = enabled;
+            case protective_detail -> protectiveDetailOverride = enabled;
+            case lab_technician -> labTechnicianOverride = enabled;
+            case inside_man -> insideManOverride = enabled;
+            default -> { }
         }
     }
 
     // Lepas override manual balik ke "auto" (ikut tabel RoleComposition) --
     // dipake sama toggle 3-state (Auto/Aktif/Nonaktif) di GUI /deception setting.
     public void clearCustomRoleOverride(Role role) {
-        if (role == Role.accomplice) {
-            accompliceOverride = null;
-        } else if (role == Role.witness) {
-            witnessOverride = null;
+        switch (role) {
+            case accomplice -> accompliceOverride = null;
+            case witness -> witnessOverride = null;
+            case protective_detail -> protectiveDetailOverride = null;
+            case lab_technician -> labTechnicianOverride = null;
+            case inside_man -> insideManOverride = null;
+            default -> { }
         }
     }
 
     public void resetCustomRoleOverrides() {
         accompliceOverride = null;
         witnessOverride = null;
+        protectiveDetailOverride = null;
+        labTechnicianOverride = null;
+        insideManOverride = null;
     }
 
     public Boolean getAccompliceOverride() {
@@ -289,6 +345,18 @@ public class GameManager {
         return witnessOverride;
     }
 
+    public Boolean getProtectiveDetailOverride() {
+        return protectiveDetailOverride;
+    }
+
+    public Boolean getLabTechnicianOverride() {
+        return labTechnicianOverride;
+    }
+
+    public Boolean getInsideManOverride() {
+        return insideManOverride;
+    }
+
     // Nilai yang bakal dipake kalo mode-nya "auto" (belum di-override manual),
     // dihitung dari tabel default RoleComposition sesuai jumlah player teregistrasi.
     public boolean resolveAccompliceDefault() {
@@ -297,6 +365,33 @@ public class GameManager {
 
     public boolean resolveWitnessDefault() {
         return new RoleComposition(registeredPlayers.size()).isWitnessEnabled();
+    }
+
+    public boolean resolveProtectiveDetailDefault() {
+        return new RoleComposition(registeredPlayers.size()).isProtectiveDetailEnabled();
+    }
+
+    public boolean resolveLabTechnicianDefault() {
+        return new RoleComposition(registeredPlayers.size()).isLabTechnicianEnabled();
+    }
+
+    public boolean resolveInsideManDefault() {
+        return new RoleComposition(registeredPlayers.size()).isInsideManEnabled();
+    }
+
+    /**
+     * Komposisi yang lagi berlaku: tabel default sesuai jumlah player, ditimpa
+     * override manual dari /customrole. Satu tempat, biar computeActiveRolePool
+     * & computeRoleAssignments gak pernah beda aturan.
+     */
+    private RoleComposition currentComposition() {
+        RoleComposition composition = new RoleComposition(registeredPlayers.size());
+        if (accompliceOverride != null) composition.setAccompliceEnabled(accompliceOverride);
+        if (witnessOverride != null) composition.setWitnessEnabled(witnessOverride);
+        if (protectiveDetailOverride != null) composition.setProtectiveDetailEnabled(protectiveDetailOverride);
+        if (labTechnicianOverride != null) composition.setLabTechnicianEnabled(labTechnicianOverride);
+        if (insideManOverride != null) composition.setInsideManEnabled(insideManOverride);
+        return composition;
     }
 
     // ---------- Set role untuk testing ----------
@@ -436,10 +531,20 @@ public class GameManager {
         }
         this.serverRef = server;
 
-        // Bersihin arena dulu (blok means/clue, head entity, cluster data
-        // sisa dari game sebelumnya -- jaga-jaga kalo restore pas
-        // stopGame/abortGame kemarin kepotong/gak sempurna) SEBELUM mulai
-        // nyusun game baru.
+        // Tarik semua ke arena DULUAN, sebelum countdown jalan. Bukan cuma
+        // biar mereka ngumpul: restoreArena cuma bisa nemu entitas display
+        // (kepala pemain, teks paper) yang chunk-nya lagi KE-LOAD -- kalo gak
+        // ada satu pun pemain di dimensi arena, sisa entitas game kemarin
+        // gak keliatan sama sapuannya dan nyangkut di sana selamanya.
+        for (UUID uuid : registeredPlayers) {
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player != null) teleportToArenaLobby(server, player);
+        }
+
+        // Sapuan pertama. Chunk arena kemungkinan besar BELUM kelar ke-load
+        // di tick ini (teleport barusan cuma ngantri-in), jadi yang ini
+        // ngurus state di memori (CLUSTERS, PresentationManager, dll); yang
+        // beneran nyapu entitas nyusul di akhir countdown -- lihat tick().
         restoreArena(server);
 
         this.state = State.COUNTDOWN;
@@ -467,6 +572,15 @@ public class GameManager {
                 AttributeInstance blockReach = player.getAttribute(ForgeMod.BLOCK_REACH.get());
                 if (blockReach != null) {
                     blockReach.setBaseValue(30.0D);
+                }
+                // Jangkauan klik ENTITAS ikut dilebarin: Inside Man nunjuk
+                // targetnya dengan klik kanan orangnya (fase Allies), dan
+                // pas itu semua orang lagi diem di posisi terakhir masing-
+                // masing -- bisa jauh dari tempat dia berdiri. Aman: PvP mati
+                // & semua gamemode adventure, jadi gak ada efek samping lain.
+                AttributeInstance entityReach = player.getAttribute(ForgeMod.ENTITY_REACH.get());
+                if (entityReach != null) {
+                    entityReach.setBaseValue(30.0D);
                 }
             }
         }
@@ -521,11 +635,16 @@ public class GameManager {
             }
         }
         revealAllRoles(server);
-        abortGame(server, chatMessage);
+        // clearTitles=false: abortGame normalnya nyapu title semua orang, dan
+        // itu jalan di tick yang SAMA kayak title kemenangan di atas -- jadi
+        // kalo dibiarin, "Kamu Menang!"/"Kamu Kalah!" langsung ketimpa layar
+        // kosong sebelum sempet keliatan sedetik pun.
+        abortGame(server, chatMessage, false);
     }
 
+    /** Inside Man menang bareng Murderer & Accomplice (lihat rulebook Undercover Allies). */
     private boolean isMurdererTeam(Role role) {
-        return role == Role.murderer || role == Role.accomplice;
+        return role == Role.murderer || role == Role.accomplice || role == Role.inside_man;
     }
 
     /** Reveal semua role ke chat pas game selesai -- dipanggil endGameWithResult SEBELUM abortGame ngosongin roleAssignments. */
@@ -542,12 +661,22 @@ public class GameManager {
     }
 
     private void abortGame(MinecraftServer server, Component reason) {
+        abortGame(server, reason, true);
+    }
+
+    /**
+     * @param clearTitles false kalo pemanggilnya BARU AJA naro title yang mau
+     *        dibiarin kebaca (lihat endGameWithResult). Actionbar tetep
+     *        dibersihin -- yang dipertahankan cuma title/subtitle.
+     */
+    private void abortGame(MinecraftServer server, Component reason, boolean clearTitles) {
         // Disalin DULUAN: field aslinya di-null-in di bawah (bagian reset
         // state), padahal restore backing-nya baru jalan setelah itu -- kalo
         // baca langsung dari field-nya, yang kebaca selalu null dan
         // restoreBacking gak pernah kepanggil.
         BlockPos selectedMeansBacking = this.murdererSelectedMeansBacking;
         BlockPos selectedClueBacking = this.murdererSelectedClueBacking;
+        BlockPos selectedLabTechBacking = this.labTechSelectedBacking;
 
         this.state = State.IDLE;
         this.roleAssignments.clear();
@@ -582,6 +711,18 @@ public class GameManager {
         this.leftMurdererName = "";
         this.leftWitnessName = "";
 
+        this.protectiveDetailConfirmed = false;
+        this.protectiveDetailWindowOpen = false;
+        this.nightProtectiveDetailRevealAt = Integer.MAX_VALUE;
+        this.protectiveDetailAutoSkipAt = Integer.MAX_VALUE;
+        this.protectiveDetailConfirmReadyAt = Integer.MAX_VALUE;
+        this.protectiveDetailAutoSkipTicksLeft = 0;
+        this.leftProtectiveDetailUuid = null;
+        this.hasProtectiveDetailLeft = false;
+        this.leftProtectiveDetailName = "";
+
+        resetAlliesState();
+
         MinecraftServer target = server != null ? server : serverRef;
         if (target != null) {
             target.setPvpAllowed(true);
@@ -595,6 +736,9 @@ public class GameManager {
             }
             if (selectedClueBacking != null) {
                 restoreBacking(level, selectedClueBacking);
+            }
+            if (selectedLabTechBacking != null) {
+                restoreBacking(level, selectedLabTechBacking);
             }
 
             restoreArena(target);
@@ -619,24 +763,36 @@ public class GameManager {
                     // ikut bersih.
                     com.deception.network.ModNetworking.clearMurderResultHud(player);
 
+                    // Panel pilihan (means/clue, item LT, target IM) juga
+                    // state client -- gak boleh nyangkut abis game selesai.
+                    com.deception.network.ModNetworking.clearSelectionHud(player);
+
                     // Role udah dikosongin di atas, jadi ini otomatis ngirim
                     // clear -- HUD role gak boleh nyangkut abis game selesai.
                     sendRoleVisibleHud(player);
 
-                    // Clear semua title dan actionbar
-                    player.connection.send(new ClientboundSetTitlesAnimationPacket(0, 0, 0));
-                    player.connection.send(new ClientboundSetTitleTextPacket(Component.empty()));
-                    player.connection.send(new ClientboundSetSubtitleTextPacket(Component.empty()));
+                    if (clearTitles) {
+                        player.connection.send(new ClientboundSetTitlesAnimationPacket(0, 0, 0));
+                        player.connection.send(new ClientboundSetTitleTextPacket(Component.empty()));
+                        player.connection.send(new ClientboundSetSubtitleTextPacket(Component.empty()));
+                    }
                     player.connection.send(new ClientboundSetActionBarTextPacket(Component.empty()));
 
                     AttributeInstance blockReach = player.getAttribute(ForgeMod.BLOCK_REACH.get());
                     if (blockReach != null) {
                         blockReach.setBaseValue(blockReach.getAttribute().getDefaultValue());
                     }
+                    AttributeInstance entityReach = player.getAttribute(ForgeMod.ENTITY_REACH.get());
+                    if (entityReach != null) {
+                        entityReach.setBaseValue(entityReach.getAttribute().getDefaultValue());
+                    }
 
-                    // Paling belakangan: arena ada di dimensi sendiri, jadi
-                    // tanpa ini pemain ketinggalan di sana tanpa jalan pulang.
-                    sendPlayerHome(target, player);
+                    // Paling belakangan: kumpulin semua di titik kumpul arena,
+                    // BUKAN dipulangin ke dunia asal. Abis satu game biasanya
+                    // langsung main lagi, jadi lebih enak semua udah ngumpul
+                    // di tempat yang sama daripada kepencar balik ke posisi
+                    // masing-masing. Yang mau keluar tinggal /deception gotoworld.
+                    teleportToArenaLobby(target, player);
                 }
             }
 
@@ -646,8 +802,43 @@ public class GameManager {
             nightBlindfolded.clear();
             nightKillers.clear();
             nightWitnessUuid = null;
+            nightProtectiveDetailUuid = null;
             broadcast(target, reason);
         }
+    }
+
+    /** Semua state fase Allies balik ke nol -- dipanggil abortGame & startAlliesSequence. */
+    private void resetAlliesState() {
+        this.alliesTicksElapsed = 0;
+        this.alliesLabTechWakeAt = Integer.MAX_VALUE;
+        this.alliesInsideManWakeAt = Integer.MAX_VALUE;
+        this.alliesWakeAllAt = Integer.MAX_VALUE;
+        this.alliesDoneAt = Integer.MAX_VALUE;
+        this.alliesLabTechUuid = null;
+        this.alliesInsideManUuid = null;
+
+        this.labTechWindowOpen = false;
+        this.labTechConfirmed = false;
+        this.labTechConfirmPromptSent = false;
+        this.insideManConfirmPromptSent = false;
+        this.labTechAwaitingAnswer = false;
+        this.labTechAnswer = null;
+        this.labTechSelectedPos = null;
+        this.labTechSelectedBacking = null;
+        this.labTechAutoSkipAt = Integer.MAX_VALUE;
+        this.labTechAutoSkipTicksLeft = 0;
+        this.leftLabTechUuid = null;
+        this.hasLabTechLeft = false;
+        this.leftLabTechName = "";
+
+        this.insideManWindowOpen = false;
+        this.insideManConfirmed = false;
+        this.insideManTargetUuid = null;
+        this.insideManAutoSkipAt = Integer.MAX_VALUE;
+        this.insideManAutoSkipTicksLeft = 0;
+        this.leftInsideManUuid = null;
+        this.hasInsideManLeft = false;
+        this.leftInsideManName = "";
     }
 
     private void restoreArena(MinecraftServer server) {
@@ -858,11 +1049,7 @@ public class GameManager {
     }
 
     private List<Role> computeActiveRolePool() {
-        RoleComposition composition = new RoleComposition(registeredPlayers.size());
-        if (accompliceOverride != null) composition.setAccompliceEnabled(accompliceOverride);
-        if (witnessOverride != null) composition.setWitnessEnabled(witnessOverride);
-
-        Map<Role, Integer> counts = composition.resolve();
+        Map<Role, Integer> counts = currentComposition().resolve();
         List<Role> pool = new ArrayList<>();
         for (Map.Entry<Role, Integer> entry : counts.entrySet()) {
             if (entry.getValue() > 0) {
@@ -873,11 +1060,7 @@ public class GameManager {
     }
 
     private void computeRoleAssignments() {
-        RoleComposition composition = new RoleComposition(registeredPlayers.size());
-        if (accompliceOverride != null) composition.setAccompliceEnabled(accompliceOverride);
-        if (witnessOverride != null) composition.setWitnessEnabled(witnessOverride);
-
-        Map<Role, Integer> counts = composition.resolve();
+        Map<Role, Integer> counts = currentComposition().resolve();
 
         // Cek apakah ada role yang udah di-set manual via /deception setrole
         Map<UUID, Role> manualRoles = new HashMap<>();
@@ -994,6 +1177,7 @@ public class GameManager {
         this.state = State.NIGHT;
         this.nightTicksElapsed = 0;
         this.murdererConfirmed = false;
+        this.murdererConfirmPromptSent = false;
         this.witnessConfirmed = false;
         this.murdererSelectedMeansBacking = null;
         this.murdererSelectedClueBacking = null;
@@ -1004,20 +1188,33 @@ public class GameManager {
         this.witnessConfirmReadyAt = Integer.MAX_VALUE;
         this.murdererAutoPickAt = Integer.MAX_VALUE;
         this.witnessAutoSkipAt = Integer.MAX_VALUE;
+        this.protectiveDetailConfirmed = false;
+        this.protectiveDetailWindowOpen = false;
+        this.protectiveDetailConfirmReadyAt = Integer.MAX_VALUE;
+        this.protectiveDetailAutoSkipAt = Integer.MAX_VALUE;
 
         UUID fsUuid = null;
         nightKillers.clear();
         nightWitnessUuid = null;
+        nightProtectiveDetailUuid = null;
         for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
             if (e.getValue() == Role.forensic_scientist) fsUuid = e.getKey();
             else if (e.getValue() == Role.murderer || e.getValue() == Role.accomplice) nightKillers.add(e.getKey());
             else if (e.getValue() == Role.witness) nightWitnessUuid = e.getKey();
+            else if (e.getValue() == Role.protective_detail) nightProtectiveDetailUuid = e.getKey();
+        }
+
+        // Yang diliat Protective Detail cuma Witness. Kalo Witness-nya gak
+        // ada (misal role-nya dipaksa manual lewat /deception setrole tanpa
+        // witness), gilirannya dicoret aja -- gak ada yang bisa direveal.
+        if (nightWitnessUuid == null) {
+            nightProtectiveDetailUuid = null;
         }
 
         nightKillersWakeAt = NIGHT_PRECLOSE_DELAY + NIGHT_CLOSE_HOLD;
-        
-        boolean hasWitness = nightWitnessUuid != null;
+
         nightWitnessRevealAt = Integer.MAX_VALUE;
+        nightProtectiveDetailRevealAt = Integer.MAX_VALUE;
         nightWakeAllAt = Integer.MAX_VALUE;
         nightDoneAt = Integer.MAX_VALUE;
 
@@ -1080,6 +1277,7 @@ public class GameManager {
             com.deception.network.ModNetworking.broadcastNightActionBar(
                     Component.literal("Menunggu murderer memilih item").withStyle(ChatFormatting.RED));
             murdererWindowOpen = true;
+            refreshMurdererHud(null);
 
             checkMurdererWakeUpOffline();
         }
@@ -1095,8 +1293,27 @@ public class GameManager {
             finalizeWitnessConfirm();
         }
 
+        if (nightTicksElapsed == protectiveDetailAutoSkipAt && protectiveDetailAutoSkipAt != Integer.MAX_VALUE) {
+            finalizeProtectiveDetailConfirm();
+        }
+
         if (nightTicksElapsed == nightWitnessRevealAt && nightWitnessRevealAt != Integer.MAX_VALUE) {
             openWitnessWindow();
+        }
+
+        if (nightTicksElapsed == nightProtectiveDetailRevealAt && nightProtectiveDetailRevealAt != Integer.MAX_VALUE) {
+            openProtectiveDetailWindow();
+        }
+
+        if (nightTicksElapsed == protectiveDetailConfirmReadyAt && protectiveDetailConfirmReadyAt != Integer.MAX_VALUE) {
+            protectiveDetailConfirmReadyAt = Integer.MAX_VALUE;
+            if (protectiveDetailWindowOpen && !protectiveDetailConfirmed && nightProtectiveDetailUuid != null) {
+                ServerPlayer pd = serverRef.getPlayerList().getPlayer(nightProtectiveDetailUuid);
+                if (pd != null) {
+                    pd.sendSystemMessage(Component.literal("Selesai melihat? ").withStyle(ChatFormatting.GREEN)
+                            .append(confirmButton()));
+                }
+            }
         }
 
         if (nightTicksElapsed == witnessConfirmReadyAt && witnessConfirmReadyAt != Integer.MAX_VALUE) {
@@ -1123,6 +1340,14 @@ public class GameManager {
             witnessAutoSkipTicksLeft = witnessAutoSkipAt - nightTicksElapsed;
             if (witnessAutoSkipTicksLeft > 0 && witnessAutoSkipTicksLeft % 20 == 0) {
                 updateWitnessSkipCountdown();
+            }
+        }
+
+        // Countdown untuk auto-skip protective detail
+        if (protectiveDetailAutoSkipAt != Integer.MAX_VALUE && protectiveDetailWindowOpen && !protectiveDetailConfirmed) {
+            protectiveDetailAutoSkipTicksLeft = protectiveDetailAutoSkipAt - nightTicksElapsed;
+            if (protectiveDetailAutoSkipTicksLeft > 0 && protectiveDetailAutoSkipTicksLeft % 20 == 0) {
+                updateProtectiveDetailSkipCountdown();
             }
         }
 
@@ -1219,7 +1444,7 @@ public class GameManager {
 
         UUID clusterOwner = clusterOwnerByPos.get(pos);
         if (clusterOwner == null || !clusterOwner.equals(uuid)) {
-            player.sendSystemMessage(Component.literal("Itu bukan cluster kamu.").withStyle(ChatFormatting.RED));
+            refreshMurdererHud(Component.literal("Itu bukan cluster kamu.").withStyle(ChatFormatting.RED));
             return true;
         }
 
@@ -1236,7 +1461,6 @@ public class GameManager {
             level.setBlock(backingPos, Blocks.GREEN_CONCRETE.defaultBlockState(), 3);
             murdererSelectedMeansBacking = backingPos;
             murdererSelectedMeansPos = pos;
-            player.sendSystemMessage(Component.literal("Means dipilih (" + getItemName(level, pos) + ").").withStyle(ChatFormatting.GREEN));
         } else {
             if (murdererSelectedClueBacking != null && !murdererSelectedClueBacking.equals(backingPos)) {
                 restoreBacking(level, murdererSelectedClueBacking);
@@ -1244,17 +1468,12 @@ public class GameManager {
             level.setBlock(backingPos, Blocks.GREEN_CONCRETE.defaultBlockState(), 3);
             murdererSelectedClueBacking = backingPos;
             murdererSelectedCluePos = pos;
-            player.sendSystemMessage(Component.literal("Clue dipilih (" + getItemName(level, pos) + ").").withStyle(ChatFormatting.GREEN));
         }
 
-        boolean bothSelected = (murdererSelectedMeansBacking != null && murdererSelectedClueBacking != null);
-        if (bothSelected) {
-            player.sendSystemMessage(Component.literal("Keduanya sudah dipilih! ").withStyle(ChatFormatting.GOLD)
-                    .append(confirmButton()));
-        } else {
-            String next = murdererSelectedMeansBacking == null ? "means" : "clue";
-            player.sendSystemMessage(Component.literal("Pilih " + next + " untuk konfirmasi.").withStyle(ChatFormatting.YELLOW));
-        }
+        // Umpan baliknya lewat panel HUD yang diganti utuh, bukan baris chat
+        // baru -- lihat komentar di atas HUD_HINT_CONFIRM.
+        refreshMurdererHud(null);
+        maybeSendMurdererConfirmPrompt(player);
         return true;
     }
 
@@ -1292,6 +1511,111 @@ public class GameManager {
      * mekanisme lama yang pake kepala konfirmasi + klik kanan. Klik
      * tombol ini bakal jalanin /deception confirm.
      */
+    // ---------- Panel pilihan di layar (pengganti spam chat) ----------
+    // Murderer, Lab Technician & Inside Man itu interaksi yang diulang-ulang:
+    // ganti pilihan sepuluh kali = sepuluh baris chat kalau dibales pakai
+    // sendSystemMessage. Semua umpan balik "pilihanmu sekarang apa" dipindah ke
+    // panel HUD yang DIGANTI utuh tiap update (lihat network/SelectionHudPacket),
+    // dan chat cuma kebagian satu tombol [KONFIRMASI] per giliran.
+
+    private static final Component HUD_HINT_CONFIRM =
+            Component.literal("Tekan [KONFIRMASI] di chat").withStyle(ChatFormatting.GREEN);
+
+    // Tombol [KONFIRMASI] udah dikirim ke chat giliran ini? Biar gak kekirim
+    // ulang tiap kali pilihannya diganti.
+    private boolean murdererConfirmPromptSent = false;
+    private boolean labTechConfirmPromptSent = false;
+    private boolean insideManConfirmPromptSent = false;
+
+    private void sendSelectionHudTo(UUID uuid, List<Component> lines, Component warning) {
+        if (serverRef == null || uuid == null) return;
+        ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
+        if (player != null) {
+            com.deception.network.ModNetworking.sendSelectionHud(player,
+                    new com.deception.network.SelectionHudPacket(lines, warning));
+        }
+    }
+
+    private void clearSelectionHud(UUID uuid) {
+        if (serverRef == null || uuid == null) return;
+        ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
+        if (player != null) com.deception.network.ModNetworking.clearSelectionHud(player);
+    }
+
+    /** Satu baris "Label: nilai"; nilai null digambar sebagai "-" yang redup. */
+    private Component hudRow(String label, String value) {
+        return Component.literal(label + ": ").withStyle(ChatFormatting.GRAY)
+                .append(Component.literal(value == null ? "-" : value)
+                        .withStyle(value == null ? ChatFormatting.DARK_GRAY : ChatFormatting.WHITE));
+    }
+
+    /** {@code warning} null = cuma gambar ulang panelnya tanpa baris penolakan. */
+    private void refreshMurdererHud(Component warning) {
+        if (serverRef == null) return;
+        UUID murdererUuid = findRoleUuid(Role.murderer);
+        if (murdererUuid == null) return;
+
+        ServerLevel level = ArenaDimension.level(serverRef);
+        List<Component> lines = new ArrayList<>();
+        lines.add(Component.literal("Pilihan kamu").withStyle(ChatFormatting.GOLD));
+        lines.add(hudRow("Means", murdererSelectedMeansPos == null ? null : getItemName(level, murdererSelectedMeansPos).replace("Means: ", "")));
+        lines.add(hudRow("Clue", murdererSelectedCluePos == null ? null : getItemName(level, murdererSelectedCluePos).replace("Clue: ", "")));
+        lines.add(murdererSelectedMeansBacking != null && murdererSelectedClueBacking != null
+                ? HUD_HINT_CONFIRM
+                : Component.literal("Klik kanan item di cluster kamu").withStyle(ChatFormatting.GRAY));
+
+        sendSelectionHudTo(murdererUuid, lines, warning);
+    }
+
+    private void maybeSendMurdererConfirmPrompt(ServerPlayer player) {
+        if (murdererConfirmPromptSent) return;
+        if (murdererSelectedMeansBacking == null || murdererSelectedClueBacking == null) return;
+        murdererConfirmPromptSent = true;
+        player.sendSystemMessage(Component.literal("Means & clue sudah dipilih. ").withStyle(ChatFormatting.GOLD)
+                .append(confirmButton()));
+    }
+
+    private void refreshLabTechHud(Component warning) {
+        if (serverRef == null || alliesLabTechUuid == null) return;
+
+        ServerLevel level = ArenaDimension.level(serverRef);
+        List<Component> lines = new ArrayList<>();
+        lines.add(Component.literal("Item diperiksa").withStyle(ChatFormatting.AQUA));
+        lines.add(hudRow("Item", labTechSelectedPos == null ? null : getItemName(level, labTechSelectedPos)));
+        lines.add(labTechSelectedPos != null
+                ? HUD_HINT_CONFIRM
+                : Component.literal("Klik kanan 1 item di TKP").withStyle(ChatFormatting.GRAY));
+
+        sendSelectionHudTo(alliesLabTechUuid, lines, warning);
+    }
+
+    private void maybeSendLabTechConfirmPrompt(ServerPlayer player) {
+        if (labTechConfirmPromptSent || labTechSelectedPos == null) return;
+        labTechConfirmPromptSent = true;
+        player.sendSystemMessage(Component.literal("Item sudah dipilih. ").withStyle(ChatFormatting.AQUA)
+                .append(confirmButton()));
+    }
+
+    private void refreshInsideManHud(Component warning) {
+        if (serverRef == null || alliesInsideManUuid == null) return;
+
+        List<Component> lines = new ArrayList<>();
+        lines.add(Component.literal("Target badge").withStyle(ChatFormatting.RED));
+        lines.add(hudRow("Target", insideManTargetUuid == null ? null : getPlayerName(insideManTargetUuid)));
+        lines.add(insideManTargetUuid != null
+                ? HUD_HINT_CONFIRM
+                : Component.literal("Klik kanan orangnya").withStyle(ChatFormatting.GRAY));
+
+        sendSelectionHudTo(alliesInsideManUuid, lines, warning);
+    }
+
+    private void maybeSendInsideManConfirmPrompt(ServerPlayer player) {
+        if (insideManConfirmPromptSent || insideManTargetUuid == null) return;
+        insideManConfirmPromptSent = true;
+        player.sendSystemMessage(Component.literal("Target sudah dipilih. ").withStyle(ChatFormatting.RED)
+                .append(confirmButton()));
+    }
+
     private Component confirmButton() {
         return Component.literal("[KONFIRMASI]")
                 .withStyle(style -> style
@@ -1309,6 +1633,9 @@ public class GameManager {
      * means/clue, atau witness abis liat killer nyala >=3 detik).
      */
     public boolean onConfirmCommand(ServerPlayer player) {
+        if (state == State.ALLIES) {
+            return onAlliesConfirmCommand(player);
+        }
         if (state != State.NIGHT) return false;
         UUID uuid = player.getUUID();
         Role role = roleAssignments.get(uuid);
@@ -1320,7 +1647,7 @@ public class GameManager {
             if (murdererSelectedMeansBacking == null || murdererSelectedClueBacking == null) {
                 String missing = murdererSelectedMeansBacking == null && murdererSelectedClueBacking == null
                         ? "means & clue" : murdererSelectedClueBacking == null ? "clue" : "means";
-                player.sendSystemMessage(Component.literal("Pilih " + missing + " dulu sebelum konfirmasi.").withStyle(ChatFormatting.RED));
+                refreshMurdererHud(Component.literal("Pilih " + missing + " dulu.").withStyle(ChatFormatting.RED));
                 return true;
             }
 
@@ -1344,6 +1671,25 @@ public class GameManager {
             }
 
             finalizeWitnessConfirm();
+
+            player.sendSystemMessage(Component.literal("Berhasil konfirmasi!").withStyle(ChatFormatting.GREEN));
+            return true;
+        }
+
+        if (role == Role.protective_detail) {
+            if (protectiveDetailConfirmed) return false;
+            if (!uuid.equals(nightProtectiveDetailUuid)) return false;
+            if (!protectiveDetailWindowOpen) {
+                player.sendSystemMessage(Component.literal("Belum waktunya konfirmasi.").withStyle(ChatFormatting.RED));
+                return true;
+            }
+            if (protectiveDetailConfirmReadyAt != Integer.MAX_VALUE && nightTicksElapsed < protectiveDetailConfirmReadyAt) {
+                player.sendSystemMessage(Component.literal("Tunggu beberapa detik dulu sebelum konfirmasi.").withStyle(ChatFormatting.RED));
+                return true;
+            }
+
+            player.sendSystemMessage(buildProtectiveDetailResultLine());
+            finalizeProtectiveDetailConfirm();
 
             player.sendSystemMessage(Component.literal("Berhasil konfirmasi!").withStyle(ChatFormatting.GREEN));
             return true;
@@ -1389,18 +1735,38 @@ public class GameManager {
         if (serverRef == null) return;
         int secondsLeft = (int) Math.ceil(witnessAutoSkipTicksLeft / 20.0);
         if (secondsLeft <= 0) return;
-        
-        Component actionBar = Component.literal("⏱ Auto-skip Witness dalam ")
+
+        sendActionBarToRole(Role.forensic_scientist, witnessSkipCountdownBar(secondsLeft));
+    }
+
+    private void updateProtectiveDetailSkipCountdown() {
+        if (serverRef == null) return;
+        int secondsLeft = (int) Math.ceil(protectiveDetailAutoSkipTicksLeft / 20.0);
+        if (secondsLeft <= 0) return;
+
+        sendActionBarToRole(Role.forensic_scientist, protectiveDetailSkipCountdownBar(secondsLeft));
+    }
+
+    private static Component witnessSkipCountdownBar(int secondsLeft) {
+        return Component.literal("⏱ Auto-skip Witness dalam ")
                 .withStyle(ChatFormatting.AQUA)
                 .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW));
-        
-        // Kirim ke Forensic Scientist saja
+    }
+
+    private static Component protectiveDetailSkipCountdownBar(int secondsLeft) {
+        return Component.literal("⏱ Auto-skip Protective Detail dalam ")
+                .withStyle(ChatFormatting.GREEN)
+                .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW));
+    }
+
+    /** Actionbar vanilla ke semua pemegang {@code role} yang lagi online. */
+    private void sendActionBarToRole(Role role, Component message) {
+        if (serverRef == null) return;
         for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
-            if (e.getValue() == Role.forensic_scientist) {
-                ServerPlayer p = serverRef.getPlayerList().getPlayer(e.getKey());
-                if (p != null) {
-                    p.connection.send(new ClientboundSetActionBarTextPacket(actionBar));
-                }
+            if (e.getValue() != role) continue;
+            ServerPlayer p = serverRef.getPlayerList().getPlayer(e.getKey());
+            if (p != null) {
+                p.connection.send(new ClientboundSetActionBarTextPacket(message));
             }
         }
     }
@@ -1474,6 +1840,7 @@ public class GameManager {
         murdererConfirmed = true;
         murdererWindowOpen = false;
         murdererAutoPickAt = Integer.MAX_VALUE;
+        clearSelectionHud(findRoleUuid(Role.murderer));
 
         ServerLevel level = ArenaDimension.level(serverRef);
         if (murdererSelectedMeansBacking != null) restoreBacking(level, murdererSelectedMeansBacking);
@@ -1525,6 +1892,21 @@ public class GameManager {
         boolean hasWitness = nightWitnessUuid != null && !witnessConfirmed;
         if (hasWitness) {
             nightWitnessRevealAt = nightTicksElapsed + NIGHT_CLOSE_HOLD;
+        } else {
+            scheduleAfterWitness();
+        }
+    }
+
+    /**
+     * Fase sesudah giliran witness: Protective Detail kalo ada, kalo enggak
+     * langsung "semua orang buka mata". Dipanggil dari DUA jalur -- abis
+     * witness selesai, dan abis murderer selesai kalo witness-nya gak ada /
+     * udah kepegang duluan.
+     */
+    private void scheduleAfterWitness() {
+        boolean hasProtectiveDetail = nightProtectiveDetailUuid != null && !protectiveDetailConfirmed;
+        if (hasProtectiveDetail) {
+            nightProtectiveDetailRevealAt = nightTicksElapsed + NIGHT_CLOSE_HOLD;
         } else {
             nightWakeAllAt = nightTicksElapsed + NIGHT_PRE_WAKE_HOLD;
             nightDoneAt = nightWakeAllAt + NIGHT_WAKE_HOLD;
@@ -1611,6 +1993,78 @@ public class GameManager {
                 Component.literal("Witness tutup mata").withStyle(ChatFormatting.RED),
                 Component.empty(), 10, 40, 10);
 
+        // Giliran terakhir fase malam: Protective Detail (kalo ada).
+        scheduleAfterWitness();
+    }
+
+    /**
+     * Buka mata Protective Detail & nyalain glow di Witness. Kembaran persis
+     * openWitnessWindow, cuma yang "nonton" & yang "dinyalain" ditukar.
+     */
+    private void openProtectiveDetailWindow() {
+        nightProtectiveDetailRevealAt = Integer.MAX_VALUE;
+        if (nightProtectiveDetailUuid == null) return;
+        if (protectiveDetailConfirmed) return; // udah di-auto-skip duluan sebelum sempet direveal
+
+        ServerPlayer pdPlayer = serverRef.getPlayerList().getPlayer(nightProtectiveDetailUuid);
+        if (pdPlayer != null) {
+            removeBlindfold(pdPlayer);
+            nightBlindfolded.remove(nightProtectiveDetailUuid);
+        }
+        com.deception.network.ModNetworking.broadcastNightTitle(
+                Component.literal("Protective Detail buka mata").withStyle(ChatFormatting.GREEN),
+                Component.empty(), 10, 40, 10);
+
+        if (nightWitnessUuid != null) {
+            ServerPlayer witnessPlayer = serverRef.getPlayerList().getPlayer(nightWitnessUuid);
+            if (witnessPlayer != null) applyGlow(witnessPlayer);
+        }
+        com.deception.network.ModNetworking.broadcastNightActionBar(
+                Component.literal("Menunggu protective detail melihat").withStyle(ChatFormatting.GREEN));
+        protectiveDetailWindowOpen = true;
+        protectiveDetailConfirmReadyAt = nightTicksElapsed + NIGHT_WITNESS_HOLD;
+
+        checkProtectiveDetailWakeUpOffline();
+    }
+
+    /** Protective Detail tutup mata lagi, lalu fase malam masuk ke "semua buka mata". */
+    private void finalizeProtectiveDetailConfirm() {
+        if (protectiveDetailConfirmed) return;
+        protectiveDetailConfirmed = true;
+        protectiveDetailWindowOpen = false;
+        protectiveDetailAutoSkipAt = Integer.MAX_VALUE;
+        protectiveDetailConfirmReadyAt = Integer.MAX_VALUE;
+
+        if (leftProtectiveDetailUuid != null) {
+            hasProtectiveDetailLeft = false;
+            leftProtectiveDetailUuid = null;
+            leftProtectiveDetailName = "";
+        }
+
+        UUID fsUuid = findRoleUuid(Role.forensic_scientist);
+        if (fsUuid != null) {
+            ServerPlayer fsPlayer = serverRef.getPlayerList().getPlayer(fsUuid);
+            if (fsPlayer != null) {
+                fsPlayer.sendSystemMessage(buildProtectiveDetailFsLine());
+            }
+        }
+
+        if (nightWitnessUuid != null) {
+            ServerPlayer witnessPlayer = serverRef.getPlayerList().getPlayer(nightWitnessUuid);
+            if (witnessPlayer != null) removeGlow(witnessPlayer);
+        }
+        com.deception.network.ModNetworking.broadcastNightActionBar(Component.empty());
+
+        ServerPlayer pdPlayer = serverRef.getPlayerList().getPlayer(nightProtectiveDetailUuid);
+        if (pdPlayer != null) {
+            putBlindfold(pdPlayer);
+            nightBlindfolded.add(nightProtectiveDetailUuid);
+        }
+
+        com.deception.network.ModNetworking.broadcastNightTitle(
+                Component.literal("Protective Detail tutup mata").withStyle(ChatFormatting.RED),
+                Component.empty(), 10, 40, 10);
+
         nightWakeAllAt = nightTicksElapsed + NIGHT_PRE_WAKE_HOLD;
         nightDoneAt = nightWakeAllAt + NIGHT_WAKE_HOLD;
     }
@@ -1654,6 +2108,12 @@ public class GameManager {
         lines.add(Component.literal("  Murderer: " + murdererName).withStyle(ChatFormatting.RED));
         lines.add(Component.literal("  Accomplice: " + (accompliceNames.isEmpty() ? "-" : String.join(", ", accompliceNames))).withStyle(ChatFormatting.RED));
         lines.add(Component.literal("  Witness: " + witnessName).withStyle(ChatFormatting.AQUA));
+        // Cuma dilampirin kalo giliran Protective Detail emang udah lewat --
+        // di jalur normal method ini dipanggil pas witness baru selesai, dan
+        // di titik itu PD belum dapet giliran, jadi belum boleh dibocorin.
+        if (protectiveDetailConfirmed && nightProtectiveDetailUuid != null) {
+            lines.add(buildProtectiveDetailFsLine());
+        }
         lines.add(Component.literal("  " + meansName).withStyle(ChatFormatting.WHITE));
         lines.add(Component.literal("  " + clueName).withStyle(ChatFormatting.WHITE));
         return lines;
@@ -1681,6 +2141,18 @@ public class GameManager {
         List<String> killerNames = new ArrayList<>();
         for (UUID k : nightKillers) killerNames.add(getPlayerName(k));
         return Component.literal("  Orang yang terlibat: " + String.join(", ", killerNames)).withStyle(ChatFormatting.RED);
+    }
+
+    /** Yang diliat Protective Detail: cuma nama Witness, gak lebih. */
+    private Component buildProtectiveDetailResultLine() {
+        String witnessName = nightWitnessUuid != null ? getPlayerName(nightWitnessUuid) : "-";
+        return Component.literal("  Witness yang harus kamu lindungi: " + witnessName).withStyle(ChatFormatting.AQUA);
+    }
+
+    /** FS tau semuanya, termasuk siapa Protective Detail-nya. */
+    private Component buildProtectiveDetailFsLine() {
+        String pdName = nightProtectiveDetailUuid != null ? getPlayerName(nightProtectiveDetailUuid) : "-";
+        return Component.literal("  Protective Detail: " + pdName).withStyle(ChatFormatting.GREEN);
     }
 
     private void restoreBacking(ServerLevel level, BlockPos pos) {
@@ -1772,44 +2244,28 @@ public class GameManager {
     }
 
     /**
-     * Di mana tiap peserta berdiri SEBELUM ditarik ke arena, biar pas game
-     * kelar mereka bisa dibalikin ke situ.
-     *
-     * <p>Wajib ada gara-gara arena pindah ke dimensi sendiri: dulu pas arena
-     * masih nempel di overworld, abis main tinggal ditinggal di tempat dan
-     * pemain bisa jalan pulang sendiri. Sekarang kalo gak dibalikin, mereka
-     * nyangkut di dimensi arena tanpa jalan keluar.
+     * Titik kumpul di dalam arena -- BEDA dari {@link #ARENA_TELEPORT_POS}
+     * (yang itu titik mulai main, di tengah lingkaran cluster). Ini tempat
+     * mendarat /deception gotoarena sekaligus tempat semua peserta ditaruh
+     * pas game selesai.
      */
-    private record HomeLocation(ResourceKey<Level> dimension, double x, double y, double z, float yaw, float pitch) {}
+    private static final double ARENA_LOBBY_X = 31.5;
+    private static final double ARENA_LOBBY_Y = -60;
+    private static final double ARENA_LOBBY_Z = 176.5;
 
-    private final Map<UUID, HomeLocation> homeLocations = new HashMap<>();
-
-    private void rememberHomeLocation(ServerPlayer player) {
-        // Jangan nimpa kalo dia UDAH di arena -- misal rejoin di tengah game,
-        // yang kecatet nanti malah posisi di dalem arena, bukan rumah aslinya.
-        if (player.level().dimension().equals(ArenaDimension.ARENA)) return;
-        homeLocations.put(player.getUUID(), new HomeLocation(
-                player.level().dimension(),
-                player.getX(), player.getY(), player.getZ(),
-                player.getYRot(), player.getXRot()));
-    }
-
-    /** Balikin satu peserta ke tempat dia sebelum ditarik ke arena. */
-    private void sendPlayerHome(MinecraftServer server, ServerPlayer player) {
-        HomeLocation home = homeLocations.remove(player.getUUID());
-        if (player.level().dimension().equals(ArenaDimension.ARENA)) {
-            ServerLevel target = home != null ? server.getLevel(home.dimension()) : null;
-            if (target == null) {
-                // Gak kecatet (atau dimensinya udah gak ada) -- jangan
-                // ditinggal nyangkut di arena, buang ke spawn overworld.
-                target = server.overworld();
-                BlockPos spawn = target.getSharedSpawnPos();
-                player.teleportTo(target, spawn.getX() + 0.5, spawn.getY(), spawn.getZ() + 0.5,
-                        player.getYRot(), player.getXRot());
-                return;
-            }
-            player.teleportTo(target, home.x(), home.y(), home.z(), home.yaw(), home.pitch());
-        }
+    /**
+     * Pindahin satu player ke titik kumpul arena.
+     *
+     * @return false kalo dimensi arenanya gak kedaftar -- caller yang mutusin
+     *         mau ngomong apa (command kasih pesan error, abortGame diem aja
+     *         biar sisa proses cleanup-nya tetep jalan).
+     */
+    public static boolean teleportToArenaLobby(MinecraftServer server, ServerPlayer player) {
+        ServerLevel arena = server.getLevel(ArenaDimension.ARENA);
+        if (arena == null) return false;
+        player.teleportTo(arena, ARENA_LOBBY_X, ARENA_LOBBY_Y, ARENA_LOBBY_Z,
+                player.getYRot(), player.getXRot());
+        return true;
     }
 
     private void teleportPlayersAndDecorateArena(MinecraftServer server) {
@@ -1819,7 +2275,6 @@ public class GameManager {
         for (UUID uuid : allPlayers) {
             ServerPlayer player = server.getPlayerList().getPlayer(uuid);
             if (player != null) {
-                rememberHomeLocation(player);
                 // Versi 5-argumen yang ada ServerLevel-nya: arena ada di
                 // dimensi sendiri, jadi ini pindah dimensi, bukan cuma pindah
                 // koordinat.
@@ -1920,9 +2375,14 @@ public class GameManager {
         if (!registeredPlayers.contains(uuid)) return;
         Role role = roleAssignments.get(uuid);
         if (role == null) return;
-        if (state != State.NIGHT) return;
 
         String name = getPlayerName(uuid);
+
+        if (state == State.ALLIES) {
+            onAlliesPlayerLeft(uuid, role, name);
+            return;
+        }
+        if (state != State.NIGHT) return;
 
         if (role == Role.murderer) {
             if (!murdererConfirmed) {
@@ -1990,6 +2450,27 @@ public class GameManager {
             }
         }
 
+        if (role == Role.protective_detail) {
+            if (!protectiveDetailConfirmed) {
+                // Sama kayak witness -- cuma react kalo jendela liatnya UDAH
+                // kebuka. Leave sebelum gilirannya ketangkep sama
+                // checkProtectiveDetailWakeUpOffline() pas "PD buka mata".
+                if (protectiveDetailWindowOpen && protectiveDetailAutoSkipAt == Integer.MAX_VALUE) {
+                    protectiveDetailAutoSkipAt = nightTicksElapsed + LEAVE_TIMEOUT_TICKS;
+                    protectiveDetailAutoSkipTicksLeft = LEAVE_TIMEOUT_TICKS;
+                    leftProtectiveDetailUuid = uuid;
+                    leftProtectiveDetailName = name;
+                    hasProtectiveDetailLeft = true;
+
+                    notifyRole(Role.forensic_scientist, protectiveDetailOfflineFsMessage(name, "keluar server"));
+                    updateProtectiveDetailSkipCountdown();
+                }
+            } else {
+                notifyRole(Role.forensic_scientist, Component.literal(name + " (Protective Detail) keluar server.")
+                        .withStyle(ChatFormatting.GREEN));
+            }
+        }
+
         if (role == Role.witness) {
             if (!witnessConfirmed) {
                 // Sama kayak murderer -- cuma react kalo jendela liatnya
@@ -2014,6 +2495,15 @@ public class GameManager {
             } else {
                 Component msg = Component.literal(name + " (Witness) keluar server.").withStyle(ChatFormatting.AQUA);
                 notifyRole(Role.forensic_scientist, msg);
+                // Kalo ini kejadian pas giliran Protective Detail lagi jalan,
+                // dia yang paling kena: yang harusnya nyala malah ilang.
+                // Sengaja gak nyebut role-nya "Witness" ke PD -- dia emang
+                // udah tau siapa yang dia liat, tapi formatnya disamain sama
+                // pesan lain biar gak keliatan beda perlakuan.
+                if (protectiveDetailWindowOpen && !protectiveDetailConfirmed) {
+                    notifyRole(Role.protective_detail, Component.literal(name + " orang yang harus kamu lindungi telah keluar server")
+                            .withStyle(ChatFormatting.AQUA));
+                }
             }
         }
     }
@@ -2084,9 +2574,48 @@ public class GameManager {
             resetCountdownActionBars();
         }
 
+        if (role == Role.protective_detail) {
+            protectiveDetailAutoSkipAt = Integer.MAX_VALUE;
+            protectiveDetailAutoSkipTicksLeft = 0;
+            if (leftProtectiveDetailUuid != null && leftProtectiveDetailUuid.equals(uuid)) {
+                hasProtectiveDetailLeft = false;
+                leftProtectiveDetailUuid = null;
+                leftProtectiveDetailName = "";
+            }
+            resetCountdownActionBars();
+        }
+
+        if (role == Role.lab_technician) {
+            labTechAutoSkipAt = Integer.MAX_VALUE;
+            labTechAutoSkipTicksLeft = 0;
+            if (leftLabTechUuid != null && leftLabTechUuid.equals(uuid)) {
+                hasLabTechLeft = false;
+                leftLabTechUuid = null;
+                leftLabTechName = "";
+            }
+            resetCountdownActionBars();
+        }
+
+        if (role == Role.inside_man) {
+            insideManAutoSkipAt = Integer.MAX_VALUE;
+            insideManAutoSkipTicksLeft = 0;
+            if (leftInsideManUuid != null && leftInsideManUuid.equals(uuid)) {
+                hasInsideManLeft = false;
+                leftInsideManUuid = null;
+                leftInsideManName = "";
+            }
+            resetCountdownActionBars();
+        }
+
         // KIRIM ULANG SKIP BUTTON ke Forensic Scientist jika masih ada player yang left
         if (role == Role.forensic_scientist) {
             resendSkipButtonToForensicScientist(player);
+
+            // Kunci paper fase Allies itu nempel di NBT stack, dan yang lagi
+            // offline pas fase-nya mulai/selesai kelewat dua-duanya. Disamain
+            // ulang di sini ke kondisi yang berlaku sekarang -- tanpa ini FS
+            // yang DC di tengah fase bisa balik bawa paper kekunci selamanya.
+            PresentationManager.get().syncAlliesPaperLock(player, state == State.ALLIES);
 
             // HUD hasil malam itu state client-only, jadi ke-reset pas dia
             // disconnect -- kirim ulang kalo murderer emang udah konfirmasi.
@@ -2108,6 +2637,12 @@ public class GameManager {
             for (Component line : buildKillerResultLines()) player.sendSystemMessage(line);
         } else if (role == Role.witness && murdererConfirmed) {
             player.sendSystemMessage(buildWitnessResultLine());
+        } else if (role == Role.protective_detail && protectiveDetailConfirmed) {
+            player.sendSystemMessage(buildProtectiveDetailResultLine());
+        } else if (role == Role.lab_technician && labTechConfirmed && labTechSelectedPos != null) {
+            player.sendSystemMessage(buildLabTechResultLine());
+        } else if (role == Role.inside_man && insideManConfirmed && insideManTargetUuid != null) {
+            player.sendSystemMessage(buildInsideManResultLine());
         } else if (role == Role.forensic_scientist && murdererConfirmed) {
             player.sendSystemMessage(Component.literal(""));
             player.sendSystemMessage(Component.literal("===== Hasil Malam =====").withStyle(ChatFormatting.GOLD));
@@ -2123,80 +2658,89 @@ public class GameManager {
         PresentationManager.get().onPlayerRejoined(player, server);
     }
 
-    // Method untuk reset actionbar countdown
+    /**
+     * Gambar ulang actionbar countdown ke Forensic Scientist & Accomplice.
+     *
+     * <p>Yang ditampilin ke FS = countdown auto-pick/auto-skip yang lagi
+     * jalan (murderer / witness / protective detail / lab technician /
+     * inside man). Kalo gak ada yang lagi dihitung mundur, dia balik ke teks
+     * "menunggu ..." fase yang lagi berlangsung. Accomplice cuma dikasih
+     * countdown murderer -- fase lain bukan urusan dia.
+     */
     private void resetCountdownActionBars() {
         if (serverRef == null) return;
-        
-        // Reset actionbar Forensic Scientist ke default
-        for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
-            if (e.getValue() == Role.forensic_scientist) {
-                ServerPlayer p = serverRef.getPlayerList().getPlayer(e.getKey());
-                if (p != null) {
-                    // Cek apakah masih ada yang left
-                    if (hasMurdererLeft && leftMurdererUuid != null && !murdererConfirmed) {
-                        int secondsLeft = (int) Math.ceil(murdererAutoPickTicksLeft / 20.0);
-                        if (secondsLeft > 0) {
-                            p.connection.send(new ClientboundSetActionBarTextPacket(
-                                Component.literal("⏱ Auto-pick Murderer dalam ")
-                                    .withStyle(ChatFormatting.RED)
-                                    .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW))
-                            ));
-                            continue;
-                        }
-                    }
-                    if (hasWitnessLeft && leftWitnessUuid != null && !witnessConfirmed) {
-                        int secondsLeft = (int) Math.ceil(witnessAutoSkipTicksLeft / 20.0);
-                        if (secondsLeft > 0) {
-                            p.connection.send(new ClientboundSetActionBarTextPacket(
-                                Component.literal("⏱ Auto-skip Witness dalam ")
-                                    .withStyle(ChatFormatting.AQUA)
-                                    .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW))
-                            ));
-                            continue;
-                        }
-                    }
-                    // Default actionbar
-                    if (witnessWindowOpen && !witnessConfirmed && nightWitnessUuid != null) {
-                        p.connection.send(new ClientboundSetActionBarTextPacket(
-                            Component.literal("Menunggu witness melihat...").withStyle(ChatFormatting.AQUA)
-                        ));
-                    } else if (murdererWindowOpen && !murdererConfirmed) {
-                        p.connection.send(new ClientboundSetActionBarTextPacket(
-                            Component.literal("Menunggu murderer memilih item").withStyle(ChatFormatting.RED)
-                        ));
-                    } else {
-                        p.connection.send(new ClientboundSetActionBarTextPacket(Component.empty()));
-                    }
-                }
+
+        Component fsBar = pendingCountdownBar();
+        if (fsBar == null) fsBar = currentWaitingBar();
+        sendActionBarToRole(Role.forensic_scientist, fsBar);
+
+        Component accompliceBar = murdererCountdownBar();
+        if (accompliceBar == null) {
+            accompliceBar = murdererWindowOpen && !murdererConfirmed
+                    ? Component.literal("Menunggu murderer memilih item").withStyle(ChatFormatting.RED)
+                    : Component.empty();
+        }
+        sendActionBarToRole(Role.accomplice, accompliceBar);
+    }
+
+    /** Countdown auto-pick murderer yang lagi jalan, atau null kalo gak ada. */
+    private Component murdererCountdownBar() {
+        if (!hasMurdererLeft || leftMurdererUuid == null || murdererConfirmed) return null;
+        int secondsLeft = (int) Math.ceil(murdererAutoPickTicksLeft / 20.0);
+        if (secondsLeft <= 0) return null;
+        return Component.literal("⏱ Auto-pick Murderer dalam ")
+                .withStyle(ChatFormatting.RED)
+                .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW));
+    }
+
+    /** Countdown APAPUN yang lagi jalan (buat FS), atau null kalo lagi gak ada. */
+    private Component pendingCountdownBar() {
+        Component murdererBar = murdererCountdownBar();
+        if (murdererBar != null) return murdererBar;
+
+        if (hasWitnessLeft && leftWitnessUuid != null && !witnessConfirmed) {
+            int secondsLeft = (int) Math.ceil(witnessAutoSkipTicksLeft / 20.0);
+            if (secondsLeft > 0) return witnessSkipCountdownBar(secondsLeft);
+        }
+        if (hasProtectiveDetailLeft && leftProtectiveDetailUuid != null && !protectiveDetailConfirmed) {
+            int secondsLeft = (int) Math.ceil(protectiveDetailAutoSkipTicksLeft / 20.0);
+            if (secondsLeft > 0) return protectiveDetailSkipCountdownBar(secondsLeft);
+        }
+        if (hasLabTechLeft && leftLabTechUuid != null && !labTechConfirmed) {
+            int secondsLeft = (int) Math.ceil(labTechAutoSkipTicksLeft / 20.0);
+            if (secondsLeft > 0) return labTechSkipCountdownBar(secondsLeft);
+        }
+        if (hasInsideManLeft && leftInsideManUuid != null && !insideManConfirmed) {
+            int secondsLeft = (int) Math.ceil(insideManAutoSkipTicksLeft / 20.0);
+            if (secondsLeft > 0) return insideManSkipCountdownBar(secondsLeft);
+        }
+        return null;
+    }
+
+    /** Teks "menunggu ..." sesuai fase yang lagi berlangsung; kosong kalo lagi gak ada giliran. */
+    private Component currentWaitingBar() {
+        if (state == State.NIGHT) {
+            if (murdererWindowOpen && !murdererConfirmed) {
+                return Component.literal("Menunggu murderer memilih item").withStyle(ChatFormatting.RED);
+            }
+            if (witnessWindowOpen && !witnessConfirmed && nightWitnessUuid != null) {
+                return Component.literal("Menunggu witness melihat").withStyle(ChatFormatting.AQUA);
+            }
+            if (protectiveDetailWindowOpen && !protectiveDetailConfirmed && nightProtectiveDetailUuid != null) {
+                return Component.literal("Menunggu protective detail melihat").withStyle(ChatFormatting.GREEN);
+            }
+        } else if (state == State.ALLIES) {
+            if (labTechAwaitingAnswer) {
+                return Component.literal("Jawab pertanyaan lab technician").withStyle(ChatFormatting.AQUA);
+            }
+            if (labTechWindowOpen && !labTechConfirmed) {
+                return Component.literal("Menunggu lab technician memilih item").withStyle(ChatFormatting.AQUA);
+            }
+            if (insideManWindowOpen && !insideManConfirmed) {
+                return Component.literal("Menunggu inside man memilih target").withStyle(ChatFormatting.DARK_RED);
             }
         }
-        
-        // Reset actionbar Accomplice
-        for (Map.Entry<UUID, Role> e : roleAssignments.entrySet()) {
-            if (e.getValue() == Role.accomplice) {
-                ServerPlayer p = serverRef.getPlayerList().getPlayer(e.getKey());
-                if (p != null) {
-                    if (hasMurdererLeft && leftMurdererUuid != null && !murdererConfirmed) {
-                        int secondsLeft = (int) Math.ceil(murdererAutoPickTicksLeft / 20.0);
-                        if (secondsLeft > 0) {
-                            p.connection.send(new ClientboundSetActionBarTextPacket(
-                                Component.literal("⏱ Auto-pick Murderer dalam ")
-                                    .withStyle(ChatFormatting.RED)
-                                    .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW))
-                            ));
-                            continue;
-                        }
-                    }
-                    if (murdererWindowOpen && !murdererConfirmed) {
-                        p.connection.send(new ClientboundSetActionBarTextPacket(
-                            Component.literal("Menunggu murderer memilih item").withStyle(ChatFormatting.RED)
-                        ));
-                    } else {
-                        p.connection.send(new ClientboundSetActionBarTextPacket(Component.empty()));
-                    }
-                }
-            }
-        }
+        return Component.empty();
     }
 
     // Method baru untuk sinkronisasi blindfold
@@ -2205,8 +2749,22 @@ public class GameManager {
     // nightBlindfolded/nightPendingBlindfold yang bisa "kelewat" update
     // kalo playernya offline pas event penting kejadian).
     private boolean computeShouldBeBlindfolded(UUID uuid, Role role) {
-        if (state != State.NIGHT) return false;
         if (role == Role.forensic_scientist) return false;
+
+        if (state == State.ALLIES) {
+            if (alliesTicksElapsed < NIGHT_PRECLOSE_DELAY) return false;
+            if (alliesWakeAllAt != Integer.MAX_VALUE && alliesTicksElapsed >= alliesWakeAllAt) return false;
+
+            if (role == Role.lab_technician && uuid.equals(alliesLabTechUuid)) {
+                return !(labTechWindowOpen && !labTechConfirmed);
+            }
+            if (role == Role.inside_man && uuid.equals(alliesInsideManUuid)) {
+                return !(insideManWindowOpen && !insideManConfirmed);
+            }
+            return true;
+        }
+
+        if (state != State.NIGHT) return false;
         if (nightTicksElapsed < NIGHT_PRECLOSE_DELAY) return false;
         if (nightWakeAllAt != Integer.MAX_VALUE && nightTicksElapsed >= nightWakeAllAt) return false;
 
@@ -2220,6 +2778,12 @@ public class GameManager {
         if (isRevealedWitness) {
             // lagi jendela liat killer nyala -> mata kebuka, selain itu tutup
             return !(witnessWindowOpen && !witnessConfirmed);
+        }
+
+        boolean isRevealedProtectiveDetail = role == Role.protective_detail && uuid.equals(nightProtectiveDetailUuid);
+        if (isRevealedProtectiveDetail) {
+            // lagi jendela liat witness nyala -> mata kebuka, selain itu tutup
+            return !(protectiveDetailWindowOpen && !protectiveDetailConfirmed);
         }
 
         // role lain (investigator dll) -- tutup terus dari awal night sampe nightWakeAllAt
@@ -2288,10 +2852,18 @@ public class GameManager {
                 if (secondsLeft > 0) {
                     Role role = roleAssignments.get(player.getUUID());
                     if (role == Role.forensic_scientist) {
-                        Component actionBar = Component.literal("⏱ Auto-skip Witness dalam ")
-                                .withStyle(ChatFormatting.AQUA)
-                                .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW));
-                        player.connection.send(new ClientboundSetActionBarTextPacket(actionBar));
+                        player.connection.send(new ClientboundSetActionBarTextPacket(witnessSkipCountdownBar(secondsLeft)));
+                        return;
+                    }
+                }
+            }
+
+            if (protectiveDetailAutoSkipAt != Integer.MAX_VALUE && leftProtectiveDetailUuid != null && !protectiveDetailConfirmed) {
+                int secondsLeft = (int) Math.ceil(protectiveDetailAutoSkipTicksLeft / 20.0);
+                if (secondsLeft > 0) {
+                    Role role = roleAssignments.get(player.getUUID());
+                    if (role == Role.forensic_scientist) {
+                        player.connection.send(new ClientboundSetActionBarTextPacket(protectiveDetailSkipCountdownBar(secondsLeft)));
                         return;
                     }
                 }
@@ -2309,9 +2881,19 @@ public class GameManager {
                     Component actionBar = Component.literal("Menunggu witness melihat").withStyle(ChatFormatting.AQUA);
                     com.deception.network.ModNetworking.sendNightActionBarTo(player, actionBar);
                 }
+            } else if (protectiveDetailWindowOpen && !protectiveDetailConfirmed && nightProtectiveDetailUuid != null) {
+                if (player.getUUID().equals(nightProtectiveDetailUuid)) {
+                    Component actionBar = Component.literal("Kamu adalah Protective Detail - Lihat siapa yang bersinar!").withStyle(ChatFormatting.GREEN);
+                    player.connection.send(new ClientboundSetActionBarTextPacket(actionBar));
+                } else {
+                    Component actionBar = Component.literal("Menunggu protective detail melihat").withStyle(ChatFormatting.GREEN);
+                    com.deception.network.ModNetworking.sendNightActionBarTo(player, actionBar);
+                }
             }
-            // Gak ada fase murderer/witness yang lagi berlangsung -- overlay
+            // Gak ada fase murderer/witness/PD yang lagi berlangsung -- overlay
             // custom-nya udah di-clear di awal method, gak perlu ngapa-ngapain lagi.
+        } else if (state == State.ALLIES) {
+            syncAlliesActionBar(player);
         } else if (state == State.DISCUSS) {
             int minutes = discussTicksLeft / 1200;
             int seconds = (discussTicksLeft % 1200) / 20;
@@ -2358,53 +2940,76 @@ public class GameManager {
                 // Fase witness buka mata
                 Component title = Component.literal("Witness buka mata").withStyle(ChatFormatting.AQUA);
                 sendTitle(player, title, Component.empty(), 10, 40, 10);
+            } else if (protectiveDetailWindowOpen && !protectiveDetailConfirmed && nightProtectiveDetailUuid != null) {
+                // Fase protective detail buka mata
+                Component title = Component.literal("Protective Detail buka mata").withStyle(ChatFormatting.GREEN);
+                sendTitle(player, title, Component.empty(), 10, 40, 10);
             } else if (nightWakeAllAt != Integer.MAX_VALUE && nightTicksElapsed >= nightWakeAllAt) {
                 // Fase semua buka mata
                 Component title = Component.literal("Semua orang buka mata").withStyle(ChatFormatting.GOLD);
                 sendTitle(player, title, Component.empty(), 10, 20, 10);
+            }
+        } else if (state == State.ALLIES) {
+            // Urutannya dari yang PALING spesifik: field *WakeAt yang udah
+            // kelewat nilainya balik ke Integer.MAX_VALUE, jadi perbandingan
+            // "belum waktunya" gak bisa dipake buat mbedain "belum mulai"
+            // dari "udah lewat" -- yang bisa dipercaya cuma flag window-nya.
+            if (labTechWindowOpen && !labTechConfirmed) {
+                sendTitle(player, Component.literal("Lab Technician buka mata").withStyle(ChatFormatting.AQUA),
+                        Component.empty(), 10, 40, 10);
+            } else if (insideManWindowOpen && !insideManConfirmed) {
+                sendTitle(player, Component.literal("Inside Man buka mata").withStyle(ChatFormatting.DARK_RED),
+                        Component.empty(), 10, 40, 10);
+            } else if (alliesWakeAllAt != Integer.MAX_VALUE && alliesTicksElapsed >= alliesWakeAllAt) {
+                sendTitle(player, Component.literal("Semua orang buka mata").withStyle(ChatFormatting.GOLD),
+                        Component.empty(), 10, 20, 10);
+            } else {
+                sendTitle(player, Component.literal("Semua orang tutup mata").withStyle(ChatFormatting.RED),
+                        Component.empty(), 10, 40, 10);
             }
         }
     }
 
     // Method baru untuk sinkronisasi glow effect
     private void syncGlowEffect(ServerPlayer player, UUID uuid, Role role) {
+        // Siapa yang SEHARUSNYA nyala detik ini, dihitung dari fase yang lagi
+        // jalan: giliran witness -> murderer & accomplice, giliran protective
+        // detail -> witness, giliran inside man -> target yang lagi dia tunjuk.
+        boolean shouldGlow;
         if (state == State.NIGHT && witnessWindowOpen && !witnessConfirmed) {
-            // Jika witness sedang melihat, killer harus glowing
-            boolean isKiller = role == Role.murderer || role == Role.accomplice;
-            boolean hasGlow = player.hasEffect(MobEffects.GLOWING);
-            
-            if (isKiller && !hasGlow) {
-                applyGlow(player);
-            } else if (!isKiller && hasGlow) {
-                removeGlow(player);
-            }
+            shouldGlow = role == Role.murderer || role == Role.accomplice;
+        } else if (state == State.NIGHT && protectiveDetailWindowOpen && !protectiveDetailConfirmed) {
+            shouldGlow = uuid.equals(nightWitnessUuid);
+        } else if (state == State.ALLIES && insideManWindowOpen && !insideManConfirmed) {
+            shouldGlow = uuid.equals(insideManTargetUuid);
         } else {
-            // State lain, pastikan tidak ada glow
-            if (player.hasEffect(MobEffects.GLOWING)) {
-                removeGlow(player);
-            }
+            shouldGlow = false;
+        }
+
+        boolean hasGlow = player.hasEffect(MobEffects.GLOWING);
+        if (shouldGlow && !hasGlow) {
+            applyGlow(player);
+        } else if (!shouldGlow && hasGlow) {
+            removeGlow(player);
         }
     }
 
     // Method baru untuk mengirim ulang pesan konfirmasi
     private void resendConfirmMessage(ServerPlayer player, Role role) {
+        if (state == State.ALLIES) {
+            resendAlliesConfirmMessage(player, role);
+            return;
+        }
         if (state != State.NIGHT) return;
-        
-        // Untuk Murderer: jika masih dalam fase memilih dan belum konfirmasi
+
+        // Untuk Murderer: jika masih dalam fase memilih dan belum konfirmasi.
+        // Panel HUD itu state CLIENT, ilang pas dia disconnect -- jadi dibangun
+        // ulang di sini, dan flag prompt-nya direset biar tombol [KONFIRMASI]
+        // yang ikut kehapus dari chat-nya boleh dikirim sekali lagi.
         if (role == Role.murderer && !murdererConfirmed && murdererWindowOpen) {
-            // Cek apakah sudah memilih kedua item
-            boolean meansSelected = murdererSelectedMeansBacking != null;
-            boolean clueSelected = murdererSelectedClueBacking != null;
-            
-            if (meansSelected && clueSelected) {
-                // Keduanya sudah dipilih, kirim tombol konfirmasi
-                player.sendSystemMessage(Component.literal("Keduanya sudah dipilih! ").withStyle(ChatFormatting.GOLD)
-                        .append(confirmButton()));
-            } else {
-                // Belum lengkap, kirim pesan item yang kurang
-                String next = !meansSelected ? "means" : "clue";
-                player.sendSystemMessage(Component.literal("Pilih " + next + " untuk konfirmasi.").withStyle(ChatFormatting.YELLOW));
-            }
+            refreshMurdererHud(null);
+            murdererConfirmPromptSent = false;
+            maybeSendMurdererConfirmPrompt(player);
         }
         
         // Untuk Witness: jika masih dalam fase melihat dan belum konfirmasi
@@ -2427,26 +3032,39 @@ public class GameManager {
                         .withStyle(ChatFormatting.YELLOW));
             }
         }
+
+        // Untuk Protective Detail: pola sama persis kayak Witness di atas.
+        if (role == Role.protective_detail && !protectiveDetailConfirmed && protectiveDetailWindowOpen
+                && nightProtectiveDetailUuid != null && nightProtectiveDetailUuid.equals(player.getUUID())) {
+            if (protectiveDetailConfirmReadyAt == Integer.MAX_VALUE || nightTicksElapsed >= protectiveDetailConfirmReadyAt) {
+                player.sendSystemMessage(Component.literal("Selesai melihat? ").withStyle(ChatFormatting.GREEN)
+                        .append(confirmButton()));
+            } else {
+                int ticksLeft = protectiveDetailConfirmReadyAt - nightTicksElapsed;
+                int secondsLeft = (int) Math.ceil(ticksLeft / 20.0);
+                player.sendSystemMessage(Component.literal("Tunggu " + secondsLeft + " detik lagi sebelum konfirmasi.")
+                        .withStyle(ChatFormatting.YELLOW));
+            }
+        }
     }
 
     // Method untuk mengirim ulang skip button ke Forensic Scientist
     private void resendSkipButtonToForensicScientist(ServerPlayer player) {
-        if (state != State.NIGHT) return;
-        if (!murdererWindowOpen && !witnessWindowOpen) return;
-        
+        boolean anyWindowOpen = state == State.NIGHT
+                ? (murdererWindowOpen || witnessWindowOpen || protectiveDetailWindowOpen)
+                : state == State.ALLIES && (labTechWindowOpen || insideManWindowOpen);
+        if (!anyWindowOpen) return;
+
         List<Component> messages = new ArrayList<>();
-        
-        // Cek apakah masih ada Murderer yang left
+
         if (hasMurdererLeft && leftMurdererUuid != null && !murdererConfirmed) {
-            // Cek apakah Murderer masih offline
             if (serverRef.getPlayerList().getPlayer(leftMurdererUuid) == null) {
                 int secondsLeft = (int) Math.ceil(murdererAutoPickTicksLeft / 20.0);
-                Component msg = Component.literal(leftMurdererName + " (Murderer) masih offline. Auto-pick dalam ")
+                messages.add(Component.literal(leftMurdererName + " (Murderer) masih offline. Auto-pick dalam ")
                         .withStyle(ChatFormatting.RED)
                         .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW))
                         .append(Component.literal(".").withStyle(ChatFormatting.RED))
-                        .append(skipRevealPrompt());
-                messages.add(msg);
+                        .append(skipRevealPrompt()));
             } else {
                 // Murderer sudah online, reset status
                 hasMurdererLeft = false;
@@ -2457,20 +3075,11 @@ public class GameManager {
                 resetCountdownActionBars();
             }
         }
-        
-        // Cek apakah masih ada Witness yang left
+
         if (hasWitnessLeft && leftWitnessUuid != null && !witnessConfirmed) {
-            // Cek apakah Witness masih offline
             if (serverRef.getPlayerList().getPlayer(leftWitnessUuid) == null) {
-                int secondsLeft = (int) Math.ceil(witnessAutoSkipTicksLeft / 20.0);
-                Component msg = Component.literal(leftWitnessName + " (Witness) masih offline. Auto-skip dalam ")
-                        .withStyle(ChatFormatting.AQUA)
-                        .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW))
-                        .append(Component.literal(".").withStyle(ChatFormatting.AQUA))
-                        .append(skipRevealPrompt());
-                messages.add(msg);
+                messages.add(stillOfflineMessage(leftWitnessName, "Witness", ChatFormatting.AQUA, witnessAutoSkipTicksLeft));
             } else {
-                // Witness sudah online, reset status
                 hasWitnessLeft = false;
                 leftWitnessUuid = null;
                 leftWitnessName = "";
@@ -2479,11 +3088,60 @@ public class GameManager {
                 resetCountdownActionBars();
             }
         }
-        
+
+        if (hasProtectiveDetailLeft && leftProtectiveDetailUuid != null && !protectiveDetailConfirmed) {
+            if (serverRef.getPlayerList().getPlayer(leftProtectiveDetailUuid) == null) {
+                messages.add(stillOfflineMessage(leftProtectiveDetailName, "Protective Detail", ChatFormatting.GREEN,
+                        protectiveDetailAutoSkipTicksLeft));
+            } else {
+                hasProtectiveDetailLeft = false;
+                leftProtectiveDetailUuid = null;
+                leftProtectiveDetailName = "";
+                protectiveDetailAutoSkipAt = Integer.MAX_VALUE;
+                protectiveDetailAutoSkipTicksLeft = 0;
+                resetCountdownActionBars();
+            }
+        }
+
+        if (hasLabTechLeft && leftLabTechUuid != null && !labTechConfirmed) {
+            if (serverRef.getPlayerList().getPlayer(leftLabTechUuid) == null) {
+                messages.add(stillOfflineMessage(leftLabTechName, "Lab Technician", ChatFormatting.AQUA, labTechAutoSkipTicksLeft));
+            } else {
+                hasLabTechLeft = false;
+                leftLabTechUuid = null;
+                leftLabTechName = "";
+                labTechAutoSkipAt = Integer.MAX_VALUE;
+                labTechAutoSkipTicksLeft = 0;
+                resetCountdownActionBars();
+            }
+        }
+
+        if (hasInsideManLeft && leftInsideManUuid != null && !insideManConfirmed) {
+            if (serverRef.getPlayerList().getPlayer(leftInsideManUuid) == null) {
+                messages.add(stillOfflineMessage(leftInsideManName, "Inside Man", ChatFormatting.DARK_RED, insideManAutoSkipTicksLeft));
+            } else {
+                hasInsideManLeft = false;
+                leftInsideManUuid = null;
+                leftInsideManName = "";
+                insideManAutoSkipAt = Integer.MAX_VALUE;
+                insideManAutoSkipTicksLeft = 0;
+                resetCountdownActionBars();
+            }
+        }
+
         // Kirim semua pesan ke Forensic Scientist
         for (Component msg : messages) {
             player.sendSystemMessage(msg);
         }
+    }
+
+    private Component stillOfflineMessage(String name, String roleLabel, ChatFormatting color, int ticksLeft) {
+        int secondsLeft = (int) Math.ceil(ticksLeft / 20.0);
+        return Component.literal(name + " (" + roleLabel + ") masih offline. Auto-skip dalam ")
+                .withStyle(color)
+                .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW))
+                .append(Component.literal(".").withStyle(color))
+                .append(skipRevealPrompt());
     }
 
     private void notifyRole(Role role, Component msg) {
@@ -2622,6 +3280,48 @@ public class GameManager {
     }
 
     /**
+     * Dipanggil pas "protective detail buka mata" (openProtectiveDetailWindow).
+     * Sama persis polanya kayak checkWitnessWakeUpOffline: kalo PD-nya udah
+     * offline dari sebelum gilirannya, timer auto-skip langsung jalan. Kalo
+     * WITNESS-nya yang lagi offline, PD dikasih tau (baru sekarang boleh,
+     * karena emang giliran dia liat) plus FS dikasih info yang sama.
+     */
+    private void checkProtectiveDetailWakeUpOffline() {
+        if (protectiveDetailConfirmed || nightProtectiveDetailUuid == null) return;
+
+        boolean pdOffline = serverRef.getPlayerList().getPlayer(nightProtectiveDetailUuid) == null;
+
+        if (pdOffline && protectiveDetailAutoSkipAt == Integer.MAX_VALUE) {
+            String pdName = getPlayerName(nightProtectiveDetailUuid);
+            leftProtectiveDetailUuid = nightProtectiveDetailUuid;
+            leftProtectiveDetailName = pdName;
+            hasProtectiveDetailLeft = true;
+
+            protectiveDetailAutoSkipAt = nightTicksElapsed + LEAVE_TIMEOUT_TICKS;
+            protectiveDetailAutoSkipTicksLeft = LEAVE_TIMEOUT_TICKS;
+
+            notifyRole(Role.forensic_scientist, protectiveDetailOfflineFsMessage(pdName, "sudah offline"));
+            updateProtectiveDetailSkipCountdown();
+        }
+
+        if (nightWitnessUuid != null && serverRef.getPlayerList().getPlayer(nightWitnessUuid) == null) {
+            String witnessName = getPlayerName(nightWitnessUuid);
+            notifyRole(Role.forensic_scientist, Component.literal(witnessName + " (Witness) sudah offline.")
+                    .withStyle(ChatFormatting.AQUA));
+            notifyRole(Role.protective_detail, Component.literal(witnessName + " orang yang harus kamu lindungi sedang offline")
+                    .withStyle(ChatFormatting.AQUA));
+        }
+    }
+
+    private Component protectiveDetailOfflineFsMessage(String pdName, String reason) {
+        return Component.literal(pdName + " (Protective Detail) " + reason + ". Auto-skip dalam ")
+                .withStyle(ChatFormatting.GREEN)
+                .append(Component.literal(getOfflineRevealSeconds() + " detik").withStyle(ChatFormatting.YELLOW))
+                .append(Component.literal(".").withStyle(ChatFormatting.GREEN))
+                .append(skipRevealPrompt());
+    }
+
+    /**
      * /deception skipreveal -- khusus OP / Forensic Scientist. Cuma
      * majuin SATU fase reveal yang lagi berlangsung, bukan langsung
      * lompat ke diskusi. Urutannya:
@@ -2634,6 +3334,9 @@ public class GameManager {
      * berikutnya, gak ngulang yang udah lewat.
      */
     public boolean skipReveal() {
+        if (state == State.ALLIES) {
+            return skipAlliesPhase();
+        }
         if (state != State.NIGHT) return false;
 
         // 1) Fase murderer lagi berlangsung.
@@ -2656,6 +3359,21 @@ public class GameManager {
         if (witnessWindowOpen && !witnessConfirmed) {
             witnessAutoSkipAt = Integer.MAX_VALUE;
             finalizeWitnessConfirm();
+            return true;
+        }
+
+        // 3b) Witness udah tutup mata, masih nunggu jeda sebelum protective
+        //     detail dibangunin -> buka sekarang juga.
+        if (!protectiveDetailConfirmed && !protectiveDetailWindowOpen
+                && nightProtectiveDetailRevealAt != Integer.MAX_VALUE) {
+            openProtectiveDetailWindow();
+            return true;
+        }
+
+        // 3c) Fase protective detail lagi berlangsung.
+        if (protectiveDetailWindowOpen && !protectiveDetailConfirmed) {
+            protectiveDetailAutoSkipAt = Integer.MAX_VALUE;
+            finalizeProtectiveDetailConfirm();
             return true;
         }
 
@@ -2925,6 +3643,754 @@ public class GameManager {
         if (entity != null) entity.discard();
     }
 
+    // ============================================================
+    //  Fase Allies -- Lab Technician & Inside Man
+    // ============================================================
+    // Nyempil di antara presentasi ronde 1 dan diskusi ronde 2, persis kayak
+    // "Allies Phase" di rulebook Undercover Allies. Mesinnya sengaja dibikin
+    // kembaran fase malam (blindfold, title, actionbar, timer offline,
+    // sinkron pas rejoin) biar kelakuannya sama persis dan gak ada aturan
+    // baru yang perlu diapal pemain.
+
+    /** Jawaban FS buat pertanyaan LT. null = belum dijawab. */
+    private Boolean labTechAnswer = null;
+
+    /** Fase Allies cuma dijalanin kalo minimal salah satu role-nya ada. */
+    private boolean hasAlliesPhaseRoles() {
+        return findRoleUuid(Role.lab_technician) != null || findRoleUuid(Role.inside_man) != null;
+    }
+
+    private void startAlliesSequence(MinecraftServer server) {
+        resetAlliesState();
+        this.state = State.ALLIES;
+        this.labTechAnswer = null;
+
+        UUID fsUuid = findRoleUuid(Role.forensic_scientist);
+        alliesLabTechUuid = findRoleUuid(Role.lab_technician);
+        alliesInsideManUuid = findRoleUuid(Role.inside_man);
+
+        nightBlindfolded.clear();
+        nightPendingBlindfold.clear();
+        for (UUID uuid : registeredPlayers) {
+            if (uuid.equals(fsUuid)) continue;
+            nightPendingBlindfold.add(uuid);
+        }
+
+        // FS gak ikut tutup mata, jadi tanpa ini dia bisa nempel paper selagi
+        // yang lain merem -- lihat PresentationManager#ALLIES_LOCKED_TAG.
+        ServerPlayer fsPlayer = PresentationManager.get().findOnlineForensicScientist(server);
+        if (fsPlayer != null) {
+            PresentationManager.get().syncAlliesPaperLock(fsPlayer, true);
+        }
+
+        int firstWakeAt = NIGHT_PRECLOSE_DELAY + NIGHT_CLOSE_HOLD;
+        if (alliesLabTechUuid != null) {
+            alliesLabTechWakeAt = firstWakeAt;
+        } else if (alliesInsideManUuid != null) {
+            alliesInsideManWakeAt = firstWakeAt;
+        }
+
+        Component title = Component.literal("Semua orang tutup mata").withStyle(ChatFormatting.RED);
+        int stay = NIGHT_PRECLOSE_DELAY + NIGHT_CLOSE_HOLD - 20;
+        for (UUID uuid : registeredPlayers) {
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player != null) sendTitle(player, title, Component.empty(), 10, stay, 10);
+        }
+    }
+
+    private void tickAlliesSequence() {
+        alliesTicksElapsed++;
+
+        for (UUID uuid : nightBlindfolded) {
+            ServerPlayer bp = serverRef.getPlayerList().getPlayer(uuid);
+            if (bp != null && bp.getItemBySlot(EquipmentSlot.HEAD).getItem() != Items.NOTE_BLOCK) {
+                bp.setItemSlot(EquipmentSlot.HEAD, createBlindfoldItem());
+            }
+        }
+
+        if (alliesTicksElapsed == NIGHT_PRECLOSE_DELAY) {
+            for (UUID uuid : nightPendingBlindfold) {
+                // /deception skipreveal bisa majuin giliran LT/IM SEBELUM
+                // detik ini -- kalo gak dikecualiin, orang yang barusan
+                // dibangunin langsung ketutup lagi di sini.
+                if (labTechWindowOpen && uuid.equals(alliesLabTechUuid)) continue;
+                if (insideManWindowOpen && uuid.equals(alliesInsideManUuid)) continue;
+
+                ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
+                if (p != null) {
+                    putBlindfold(p);
+                    nightBlindfolded.add(uuid);
+                }
+            }
+        }
+
+        if (alliesTicksElapsed == alliesLabTechWakeAt) {
+            openLabTechWindow();
+        }
+
+        if (alliesTicksElapsed == labTechAutoSkipAt) {
+            labTechAutoSkipAt = Integer.MAX_VALUE;
+            autoFinishLabTech();
+        }
+
+        if (alliesTicksElapsed == alliesInsideManWakeAt) {
+            openInsideManWindow();
+        }
+
+        if (alliesTicksElapsed == insideManAutoSkipAt) {
+            insideManAutoSkipAt = Integer.MAX_VALUE;
+            autoFinishInsideMan();
+        }
+
+        if (labTechAutoSkipAt != Integer.MAX_VALUE && labTechWindowOpen && !labTechConfirmed) {
+            labTechAutoSkipTicksLeft = labTechAutoSkipAt - alliesTicksElapsed;
+            if (labTechAutoSkipTicksLeft > 0 && labTechAutoSkipTicksLeft % 20 == 0) {
+                sendActionBarToRole(Role.forensic_scientist,
+                        labTechSkipCountdownBar((int) Math.ceil(labTechAutoSkipTicksLeft / 20.0)));
+            }
+        }
+
+        if (insideManAutoSkipAt != Integer.MAX_VALUE && insideManWindowOpen && !insideManConfirmed) {
+            insideManAutoSkipTicksLeft = insideManAutoSkipAt - alliesTicksElapsed;
+            if (insideManAutoSkipTicksLeft > 0 && insideManAutoSkipTicksLeft % 20 == 0) {
+                sendActionBarToRole(Role.forensic_scientist,
+                        insideManSkipCountdownBar((int) Math.ceil(insideManAutoSkipTicksLeft / 20.0)));
+            }
+        }
+
+        if (alliesTicksElapsed == alliesWakeAllAt) {
+            wakeEveryoneFromAllies();
+        }
+
+        if (alliesTicksElapsed >= alliesDoneAt && alliesDoneAt != Integer.MAX_VALUE) {
+            state = State.DISCUSS;
+            broadcastForensicWaitActionBar();
+        }
+    }
+
+    private void wakeEveryoneFromAllies() {
+        for (UUID uuid : new ArrayList<>(nightBlindfolded)) {
+            ServerPlayer p = serverRef.getPlayerList().getPlayer(uuid);
+            if (p != null) removeBlindfold(p);
+        }
+        nightBlindfolded.clear();
+        com.deception.network.ModNetworking.broadcastNightActionBar(Component.empty());
+        com.deception.network.ModNetworking.broadcastNightTitle(
+                Component.literal("Semua orang buka mata").withStyle(ChatFormatting.GOLD),
+                Component.empty(), 10, NIGHT_WAKE_HOLD, 10);
+
+        // Buka kunci paper sisa ronde 1 DULUAN, baru kasih jatah ronde 2.
+        // Urutannya penting: paper ronde 2 dateng bawa PLACEMENT_LOCKED_TAG
+        // sendiri (nunggu FS hapus tile lama), dan itu kunci yang beda --
+        // gak boleh ikut kelepas di sini.
+        ServerPlayer fsPlayer = PresentationManager.get().findOnlineForensicScientist(serverRef);
+        if (fsPlayer != null) {
+            PresentationManager.get().syncAlliesPaperLock(fsPlayer, false);
+        }
+
+        // Scene tile ronde 2 + penghapusnya baru dikasih SEKARANG, bukan pas
+        // ronde 1 kelar (lihat PresentationManager#advanceRound) -- biar FS
+        // gak nerima item selagi semua orang masih tutup mata.
+        PresentationManager.get().giveDeferredRoundPaper(serverRef);
+
+        // Badge-nya baru beneran dicabut SEKARANG, bukan pas Inside Man
+        // nunjuk -- ngikutin rulebook: FS baru ngambil token-nya setelah
+        // semua orang buka mata, jadi semua orang liat siapa yang kena.
+        if (insideManTargetUuid != null) {
+            String targetName = getPlayerName(insideManTargetUuid);
+            if (PresentationManager.get().revokeBadge(serverRef, insideManTargetUuid)) {
+                broadcast(serverRef, Component.literal("Police badge milik " + targetName + " hilang secara misterius.")
+                        .withStyle(ChatFormatting.DARK_RED));
+            }
+        }
+    }
+
+    // ---------- Lab Technician ----------
+
+    private void openLabTechWindow() {
+        alliesLabTechWakeAt = Integer.MAX_VALUE;
+        if (alliesLabTechUuid == null || labTechConfirmed) {
+            scheduleInsideManOrWake();
+            return;
+        }
+
+        ServerPlayer lt = serverRef.getPlayerList().getPlayer(alliesLabTechUuid);
+        if (lt != null) {
+            removeBlindfold(lt);
+            nightBlindfolded.remove(alliesLabTechUuid);
+            lt.sendSystemMessage(Component.literal("Klik kanan 1 item di TKP buat ditanyain ke Forensic Scientist.")
+                    .withStyle(ChatFormatting.AQUA));
+        }
+        com.deception.network.ModNetworking.broadcastNightTitle(
+                Component.literal("Lab Technician buka mata").withStyle(ChatFormatting.AQUA),
+                Component.empty(), 10, 40, 10);
+        com.deception.network.ModNetworking.broadcastNightActionBar(
+                Component.literal("Menunggu lab technician memilih item").withStyle(ChatFormatting.AQUA));
+        labTechWindowOpen = true;
+        refreshLabTechHud(null);
+
+        checkLabTechWakeUpOffline();
+    }
+
+    /**
+     * Dipanggil dari event klik kanan block. Beda dari murderer, Lab
+     * Technician boleh nunjuk item PUNYA SIAPA AJA -- rulebook-nya bilang
+     * "any 1 card in play".
+     */
+    public boolean onLabTechClickClue(ServerPlayer player, ServerLevel level, BlockPos pos) {
+        if (state != State.ALLIES || !labTechWindowOpen || labTechConfirmed || labTechAwaitingAnswer) return false;
+        if (!player.getUUID().equals(alliesLabTechUuid)) return false;
+
+        long currentTick = level.getGameTime();
+        if (currentTick == lastClickTick && processedClicks.contains(pos)) {
+            return false;
+        }
+        if (currentTick != lastClickTick) {
+            processedClicks.clear();
+            lastClickTick = currentTick;
+        }
+        processedClicks.add(pos);
+
+        BlockState clickedState = level.getBlockState(pos);
+        if (!(clickedState.getBlock() instanceof ClueBlock)) return false;
+        if (clickedState.getValue(ClueBlock.FACE) != AttachFace.WALL) return false;
+
+        Direction facing = clickedState.getValue(ClueBlock.FACING);
+        BlockPos backingPos = pos.relative(facing.getOpposite());
+
+        if (labTechSelectedBacking != null && !labTechSelectedBacking.equals(backingPos)) {
+            restoreBacking(level, labTechSelectedBacking);
+        }
+        level.setBlock(backingPos, Blocks.GREEN_CONCRETE.defaultBlockState(), 3);
+        labTechSelectedBacking = backingPos;
+        labTechSelectedPos = pos;
+
+        refreshLabTechHud(null);
+        maybeSendLabTechConfirmPrompt(player);
+        return true;
+    }
+
+    /** LT klik [KONFIRMASI] -- pertanyaannya dilempar ke Forensic Scientist. */
+    private void askForensicScientistAboutItem() {
+        ServerLevel level = ArenaDimension.level(serverRef);
+        if (labTechSelectedBacking != null) restoreBacking(level, labTechSelectedBacking);
+
+        labTechAwaitingAnswer = true;
+        labTechAutoSkipAt = Integer.MAX_VALUE;
+        String itemName = getItemName(level, labTechSelectedPos);
+
+        UUID fsUuid = findRoleUuid(Role.forensic_scientist);
+        ServerPlayer fsPlayer = fsUuid != null ? serverRef.getPlayerList().getPlayer(fsUuid) : null;
+        if (fsPlayer == null) {
+            // FS-nya lagi gak ada -- fase gak boleh macet nunggu jawaban yang
+            // gak bakal dateng. Dijawab otomatis pakai kebenaran aslinya
+            // (dicocokin ke means/clue pilihan murderer).
+            answerLabTechnician(isPartOfSolution(labTechSelectedPos));
+            return;
+        }
+
+        fsPlayer.sendSystemMessage(Component.literal(""));
+        fsPlayer.sendSystemMessage(Component.literal("Lab Technician menanyakan: " + itemName)
+                .withStyle(ChatFormatting.AQUA));
+        fsPlayer.sendSystemMessage(Component.literal("Item ini bagian dari solusi? ")
+                .append(labTechAnswerButton("[BENAR]", ChatFormatting.GREEN, "/deception true"))
+                .append(Component.literal(" "))
+                .append(labTechAnswerButton("[SALAH]", ChatFormatting.RED, "/deception false")));
+
+        com.deception.network.ModNetworking.broadcastNightActionBar(
+                Component.literal("Menunggu jawaban forensic scientist").withStyle(ChatFormatting.AQUA));
+    }
+
+    private Component labTechAnswerButton(String label, ChatFormatting color, String command) {
+        return Component.literal(label).withStyle(style -> style
+                .withColor(color)
+                .withBold(true)
+                .withUnderlined(true)
+                .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, command))
+                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal("Klik untuk menjawab"))));
+    }
+
+    /** Item yang ditunjuk emang salah satu means/clue pilihan murderer? */
+    private boolean isPartOfSolution(BlockPos pos) {
+        if (pos == null) return false;
+        return pos.equals(murdererSelectedMeansPos) || pos.equals(murdererSelectedCluePos);
+    }
+
+    public boolean isLabTechAwaitingAnswer() {
+        return state == State.ALLIES && labTechAwaitingAnswer;
+    }
+
+    /**
+     * Jawaban FS ([BENAR]/[SALAH]) buat pertanyaan Lab Technician. Dipanggil
+     * /deception true & /deception false -- lihat ModCommands, di sana ini
+     * dicoba DULUAN sebelum jalur confession police badge.
+     * @return false kalo lagi gak ada pertanyaan yang nunggu dijawab.
+     */
+    public boolean answerLabTechnician(boolean partOfSolution) {
+        if (state != State.ALLIES || !labTechAwaitingAnswer) return false;
+
+        labTechAwaitingAnswer = false;
+        labTechAnswer = partOfSolution;
+
+        ServerPlayer lt = alliesLabTechUuid != null ? serverRef.getPlayerList().getPlayer(alliesLabTechUuid) : null;
+        if (lt != null) {
+            lt.sendSystemMessage(Component.literal(""));
+            lt.sendSystemMessage(buildLabTechResultLine());
+        }
+
+        closeLabTechEyesAndScheduleNext();
+        return true;
+    }
+
+    private void closeLabTechEyesAndScheduleNext() {
+        labTechConfirmed = true;
+        labTechWindowOpen = false;
+        labTechAwaitingAnswer = false;
+        labTechAutoSkipAt = Integer.MAX_VALUE;
+        clearSelectionHud(alliesLabTechUuid);
+
+        if (leftLabTechUuid != null) {
+            hasLabTechLeft = false;
+            leftLabTechUuid = null;
+            leftLabTechName = "";
+        }
+
+        ServerPlayer lt = alliesLabTechUuid != null ? serverRef.getPlayerList().getPlayer(alliesLabTechUuid) : null;
+        if (lt != null) {
+            putBlindfold(lt);
+            nightBlindfolded.add(alliesLabTechUuid);
+        }
+
+        com.deception.network.ModNetworking.broadcastNightTitle(
+                Component.literal("Lab Technician tutup mata").withStyle(ChatFormatting.RED),
+                Component.empty(), 10, 40, 10);
+        com.deception.network.ModNetworking.broadcastNightActionBar(Component.empty());
+
+        scheduleInsideManOrWake();
+    }
+
+    private void scheduleInsideManOrWake() {
+        if (alliesInsideManUuid != null && !insideManConfirmed) {
+            alliesInsideManWakeAt = alliesTicksElapsed + NIGHT_CLOSE_HOLD;
+        } else {
+            alliesWakeAllAt = alliesTicksElapsed + NIGHT_PRE_WAKE_HOLD;
+            alliesDoneAt = alliesWakeAllAt + NIGHT_WAKE_HOLD;
+        }
+    }
+
+    /**
+     * LT kelamaan offline / di-skip. Kalo dia UDAH sempet nunjuk item,
+     * pertanyaannya tetep diterusin ke FS (jawabannya nyampe pas dia rejoin);
+     * kalo belum nunjuk apa-apa, gilirannya hangus.
+     */
+    private void autoFinishLabTech() {
+        if (labTechConfirmed || labTechAwaitingAnswer) return;
+        if (labTechSelectedPos != null) {
+            askForensicScientistAboutItem();
+            return;
+        }
+        notifyRole(Role.forensic_scientist,
+                Component.literal("Lab Technician tidak sempat memeriksa item apa pun.").withStyle(ChatFormatting.GRAY));
+        closeLabTechEyesAndScheduleNext();
+    }
+
+    private void checkLabTechWakeUpOffline() {
+        if (labTechConfirmed || alliesLabTechUuid == null) return;
+        if (serverRef.getPlayerList().getPlayer(alliesLabTechUuid) != null) return;
+        if (labTechAutoSkipAt != Integer.MAX_VALUE) return;
+
+        String name = getPlayerName(alliesLabTechUuid);
+        leftLabTechUuid = alliesLabTechUuid;
+        leftLabTechName = name;
+        hasLabTechLeft = true;
+        labTechAutoSkipAt = alliesTicksElapsed + LEAVE_TIMEOUT_TICKS;
+        labTechAutoSkipTicksLeft = LEAVE_TIMEOUT_TICKS;
+
+        notifyRole(Role.forensic_scientist, Component.literal(name + " (Lab Technician) sudah offline. Auto-skip dalam ")
+                .withStyle(ChatFormatting.AQUA)
+                .append(Component.literal(getOfflineRevealSeconds() + " detik").withStyle(ChatFormatting.YELLOW))
+                .append(Component.literal(".").withStyle(ChatFormatting.AQUA))
+                .append(skipRevealPrompt()));
+        sendActionBarToRole(Role.forensic_scientist, labTechSkipCountdownBar(getOfflineRevealSeconds()));
+    }
+
+    private static Component labTechSkipCountdownBar(int secondsLeft) {
+        return Component.literal("⏱ Auto-skip Lab Technician dalam ")
+                .withStyle(ChatFormatting.AQUA)
+                .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW));
+    }
+
+    private Component buildLabTechResultLine() {
+        ServerLevel level = ArenaDimension.level(serverRef);
+        String itemName = labTechSelectedPos != null ? getItemName(level, labTechSelectedPos) : "?";
+        if (labTechAnswer == null) {
+            return Component.literal("  " + itemName + ": belum ada jawaban.").withStyle(ChatFormatting.GRAY);
+        }
+        return labTechAnswer
+                ? Component.literal("  " + itemName + " BENAR dipakai di TKP.").withStyle(ChatFormatting.GREEN)
+                : Component.literal("  " + itemName + " TIDAK dipakai di TKP.").withStyle(ChatFormatting.RED);
+    }
+
+    // ---------- Inside Man ----------
+
+    private void openInsideManWindow() {
+        alliesInsideManWakeAt = Integer.MAX_VALUE;
+        if (alliesInsideManUuid == null || insideManConfirmed) {
+            alliesWakeAllAt = alliesTicksElapsed + NIGHT_PRE_WAKE_HOLD;
+            alliesDoneAt = alliesWakeAllAt + NIGHT_WAKE_HOLD;
+            return;
+        }
+
+        ServerPlayer im = serverRef.getPlayerList().getPlayer(alliesInsideManUuid);
+        if (im != null) {
+            removeBlindfold(im);
+            nightBlindfolded.remove(alliesInsideManUuid);
+            im.sendSystemMessage(Component.literal("Klik kanan orang yang badge-nya mau kamu cabut.")
+                    .withStyle(ChatFormatting.RED));
+            sendInsideManTargetList(im);
+        }
+        com.deception.network.ModNetworking.broadcastNightTitle(
+                Component.literal("Inside Man buka mata").withStyle(ChatFormatting.DARK_RED),
+                Component.empty(), 10, 40, 10);
+        com.deception.network.ModNetworking.broadcastNightActionBar(
+                Component.literal("Menunggu inside man memilih target").withStyle(ChatFormatting.DARK_RED));
+        insideManWindowOpen = true;
+        refreshInsideManHud(null);
+
+        checkInsideManWakeUpOffline();
+    }
+
+    /**
+     * Daftar nama yang bisa diklik langsung -- cadangan buat kasus orangnya
+     * lagi gak keliatan dari tempat Inside Man berdiri (semua orang lagi
+     * tutup mata di posisi terakhir mereka, bukan dibariskan rapi).
+     */
+    private void sendInsideManTargetList(ServerPlayer insideMan) {
+        insideMan.sendSystemMessage(Component.literal("Atau pilih dari daftar:").withStyle(ChatFormatting.GRAY));
+        for (UUID uuid : registeredPlayers) {
+            if (!PresentationManager.get().hasBadge(uuid)) continue;
+            String name = getPlayerName(uuid);
+            insideMan.sendSystemMessage(Component.literal("  ")
+                    .append(Component.literal("[" + name + "]").withStyle(style -> style
+                            .withColor(ChatFormatting.YELLOW)
+                            .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/deception target " + name))
+                            .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                                    Component.literal("Cabut badge " + name))))));
+        }
+    }
+
+    /** Dipanggil dari event klik kanan entitas (lihat DeceptionMod#onEntityInteract). */
+    public boolean onInsideManClickPlayer(ServerPlayer player, ServerPlayer target) {
+        if (state != State.ALLIES || !insideManWindowOpen || insideManConfirmed) return false;
+        if (!player.getUUID().equals(alliesInsideManUuid)) return false;
+        selectInsideManTarget(player, target.getUUID());
+        return true;
+    }
+
+    /** Dipanggil /deception target <playername>. @return false kalo bukan gilirannya. */
+    public boolean onInsideManPickByName(ServerPlayer player, String targetName) {
+        if (state != State.ALLIES || !insideManWindowOpen || insideManConfirmed) return false;
+        if (!player.getUUID().equals(alliesInsideManUuid)) return false;
+
+        for (UUID uuid : registeredPlayers) {
+            if (getPlayerName(uuid).equalsIgnoreCase(targetName)) {
+                selectInsideManTarget(player, uuid);
+                return true;
+            }
+        }
+        player.sendSystemMessage(Component.literal(targetName + " tidak terdaftar di game ini.").withStyle(ChatFormatting.RED));
+        return true;
+    }
+
+    private void selectInsideManTarget(ServerPlayer insideMan, UUID targetUuid) {
+        if (!registeredPlayers.contains(targetUuid)) {
+            refreshInsideManHud(Component.literal("Dia bukan peserta game ini.").withStyle(ChatFormatting.RED));
+            return;
+        }
+        if (!PresentationManager.get().hasBadge(targetUuid)) {
+            refreshInsideManHud(Component.literal(getPlayerName(targetUuid) + " sudah tidak punya badge.")
+                    .withStyle(ChatFormatting.RED));
+            return;
+        }
+
+        // Lepas tanda di target sebelumnya kalo dia ganti pilihan.
+        if (insideManTargetUuid != null && !insideManTargetUuid.equals(targetUuid)) {
+            ServerPlayer previous = serverRef.getPlayerList().getPlayer(insideManTargetUuid);
+            if (previous != null) removeGlow(previous);
+        }
+        insideManTargetUuid = targetUuid;
+
+        ServerPlayer target = serverRef.getPlayerList().getPlayer(targetUuid);
+        if (target != null) applyGlow(target);
+
+        refreshInsideManHud(null);
+        maybeSendInsideManConfirmPrompt(insideMan);
+    }
+
+    private void closeInsideManEyesAndScheduleWake() {
+        insideManConfirmed = true;
+        insideManWindowOpen = false;
+        insideManAutoSkipAt = Integer.MAX_VALUE;
+        clearSelectionHud(alliesInsideManUuid);
+
+        if (leftInsideManUuid != null) {
+            hasInsideManLeft = false;
+            leftInsideManUuid = null;
+            leftInsideManName = "";
+        }
+
+        if (insideManTargetUuid != null) {
+            ServerPlayer target = serverRef.getPlayerList().getPlayer(insideManTargetUuid);
+            if (target != null) removeGlow(target);
+        }
+
+        ServerPlayer im = alliesInsideManUuid != null ? serverRef.getPlayerList().getPlayer(alliesInsideManUuid) : null;
+        if (im != null) {
+            putBlindfold(im);
+            nightBlindfolded.add(alliesInsideManUuid);
+        }
+
+        com.deception.network.ModNetworking.broadcastNightTitle(
+                Component.literal("Inside Man tutup mata").withStyle(ChatFormatting.RED),
+                Component.empty(), 10, 40, 10);
+        com.deception.network.ModNetworking.broadcastNightActionBar(Component.empty());
+
+        alliesWakeAllAt = alliesTicksElapsed + NIGHT_PRE_WAKE_HOLD;
+        alliesDoneAt = alliesWakeAllAt + NIGHT_WAKE_HOLD;
+    }
+
+    /**
+     * IM kelamaan offline / di-skip. SENGAJA gak ngerandom target: nyabut
+     * badge orang secara acak itu hukuman beneran buat pemain yang gak salah
+     * apa-apa. Kalo dia udah sempet nunjuk, pilihannya dipake; kalo belum,
+     * gilirannya hangus tanpa ada yang kehilangan badge.
+     */
+    private void autoFinishInsideMan() {
+        if (insideManConfirmed) return;
+        if (insideManTargetUuid == null) {
+            notifyRole(Role.forensic_scientist,
+                    Component.literal("Inside Man tidak sempat memilih target.").withStyle(ChatFormatting.GRAY));
+        }
+        closeInsideManEyesAndScheduleWake();
+    }
+
+    private void checkInsideManWakeUpOffline() {
+        if (insideManConfirmed || alliesInsideManUuid == null) return;
+        if (serverRef.getPlayerList().getPlayer(alliesInsideManUuid) != null) return;
+        if (insideManAutoSkipAt != Integer.MAX_VALUE) return;
+
+        String name = getPlayerName(alliesInsideManUuid);
+        leftInsideManUuid = alliesInsideManUuid;
+        leftInsideManName = name;
+        hasInsideManLeft = true;
+        insideManAutoSkipAt = alliesTicksElapsed + LEAVE_TIMEOUT_TICKS;
+        insideManAutoSkipTicksLeft = LEAVE_TIMEOUT_TICKS;
+
+        notifyRole(Role.forensic_scientist, Component.literal(name + " (Inside Man) sudah offline. Auto-skip dalam ")
+                .withStyle(ChatFormatting.DARK_RED)
+                .append(Component.literal(getOfflineRevealSeconds() + " detik").withStyle(ChatFormatting.YELLOW))
+                .append(Component.literal(".").withStyle(ChatFormatting.DARK_RED))
+                .append(skipRevealPrompt()));
+        sendActionBarToRole(Role.forensic_scientist, insideManSkipCountdownBar(getOfflineRevealSeconds()));
+    }
+
+    private static Component insideManSkipCountdownBar(int secondsLeft) {
+        return Component.literal("⏱ Auto-skip Inside Man dalam ")
+                .withStyle(ChatFormatting.DARK_RED)
+                .append(Component.literal(secondsLeft + "s").withStyle(ChatFormatting.YELLOW));
+    }
+
+    private Component buildInsideManResultLine() {
+        String targetName = insideManTargetUuid != null ? getPlayerName(insideManTargetUuid) : "-";
+        return Component.literal("  Badge yang kamu cabut: " + targetName).withStyle(ChatFormatting.DARK_RED);
+    }
+
+    // ---------- Konfirmasi, sinkron & skip fase Allies ----------
+
+    private boolean onAlliesConfirmCommand(ServerPlayer player) {
+        UUID uuid = player.getUUID();
+        Role role = roleAssignments.get(uuid);
+        if (role == null) return false;
+
+        if (role == Role.lab_technician && uuid.equals(alliesLabTechUuid)) {
+            if (labTechConfirmed || labTechAwaitingAnswer) return false;
+            if (!labTechWindowOpen) {
+                player.sendSystemMessage(Component.literal("Belum waktunya konfirmasi.").withStyle(ChatFormatting.RED));
+                return true;
+            }
+            if (labTechSelectedPos == null) {
+                refreshLabTechHud(Component.literal("Pilih 1 item dulu.").withStyle(ChatFormatting.RED));
+                return true;
+            }
+            askForensicScientistAboutItem();
+            player.sendSystemMessage(Component.literal("Pertanyaan dikirim, tunggu jawaban Forensic Scientist.")
+                    .withStyle(ChatFormatting.GREEN));
+            return true;
+        }
+
+        if (role == Role.inside_man && uuid.equals(alliesInsideManUuid)) {
+            if (insideManConfirmed) return false;
+            if (!insideManWindowOpen) {
+                player.sendSystemMessage(Component.literal("Belum waktunya konfirmasi.").withStyle(ChatFormatting.RED));
+                return true;
+            }
+            if (insideManTargetUuid == null) {
+                refreshInsideManHud(Component.literal("Pilih 1 orang dulu.").withStyle(ChatFormatting.RED));
+                return true;
+            }
+            player.sendSystemMessage(buildInsideManResultLine());
+            closeInsideManEyesAndScheduleWake();
+            player.sendSystemMessage(Component.literal("Pilihan dikonfirmasi!").withStyle(ChatFormatting.GREEN));
+            return true;
+        }
+
+        player.sendSystemMessage(Component.literal("Tidak ada yang perlu dikonfirmasi sekarang.").withStyle(ChatFormatting.RED));
+        return true;
+    }
+
+    private void syncAlliesActionBar(ServerPlayer player) {
+        Role role = roleAssignments.get(player.getUUID());
+
+        if (role == Role.forensic_scientist) {
+            Component bar = pendingCountdownBar();
+            if (bar != null) {
+                player.connection.send(new ClientboundSetActionBarTextPacket(bar));
+                return;
+            }
+        }
+
+        if (labTechAwaitingAnswer) {
+            com.deception.network.ModNetworking.sendNightActionBarTo(player,
+                    Component.literal("Menunggu jawaban forensic scientist").withStyle(ChatFormatting.AQUA));
+        } else if (labTechWindowOpen && !labTechConfirmed) {
+            com.deception.network.ModNetworking.sendNightActionBarTo(player,
+                    Component.literal("Menunggu lab technician memilih item").withStyle(ChatFormatting.AQUA));
+        } else if (insideManWindowOpen && !insideManConfirmed) {
+            com.deception.network.ModNetworking.sendNightActionBarTo(player,
+                    Component.literal("Menunggu inside man memilih target").withStyle(ChatFormatting.DARK_RED));
+        }
+    }
+
+    private void resendAlliesConfirmMessage(ServerPlayer player, Role role) {
+        UUID uuid = player.getUUID();
+
+        if (role == Role.lab_technician && uuid.equals(alliesLabTechUuid)
+                && labTechWindowOpen && !labTechConfirmed && !labTechAwaitingAnswer) {
+            refreshLabTechHud(null);
+            if (labTechSelectedPos == null) {
+                player.sendSystemMessage(Component.literal("Klik kanan 1 item di TKP buat ditanyain ke Forensic Scientist.")
+                        .withStyle(ChatFormatting.AQUA));
+            } else {
+                labTechConfirmPromptSent = false;
+                maybeSendLabTechConfirmPrompt(player);
+            }
+        }
+
+        if (role == Role.lab_technician && labTechAwaitingAnswer) {
+            player.sendSystemMessage(Component.literal("Pertanyaanmu masih ditunggu jawabannya oleh Forensic Scientist.")
+                    .withStyle(ChatFormatting.AQUA));
+        }
+
+        if (role == Role.inside_man && uuid.equals(alliesInsideManUuid)
+                && insideManWindowOpen && !insideManConfirmed) {
+            refreshInsideManHud(null);
+            if (insideManTargetUuid == null) {
+                player.sendSystemMessage(Component.literal("Klik kanan orang yang badge-nya mau kamu cabut.")
+                        .withStyle(ChatFormatting.RED));
+                sendInsideManTargetList(player);
+            } else {
+                insideManConfirmPromptSent = false;
+                maybeSendInsideManConfirmPrompt(player);
+            }
+        }
+
+        // FS balik pas pertanyaan LT masih ngegantung -- kirim ulang tombolnya.
+        if (role == Role.forensic_scientist && labTechAwaitingAnswer && labTechSelectedPos != null) {
+            ServerLevel level = ArenaDimension.level(serverRef);
+            player.sendSystemMessage(Component.literal("Lab Technician menanyakan: "
+                    + getItemName(level, labTechSelectedPos)).withStyle(ChatFormatting.AQUA));
+            player.sendSystemMessage(Component.literal("Item ini bagian dari solusi? ")
+                    .append(labTechAnswerButton("[BENAR]", ChatFormatting.GREEN, "/deception true"))
+                    .append(Component.literal(" "))
+                    .append(labTechAnswerButton("[SALAH]", ChatFormatting.RED, "/deception false")));
+        }
+    }
+
+    /** Pasangan skipReveal buat fase Allies -- majuin SATU tahap yang lagi jalan. */
+    private boolean skipAlliesPhase() {
+        if (labTechAwaitingAnswer) {
+            answerLabTechnician(isPartOfSolution(labTechSelectedPos));
+            return true;
+        }
+        if (labTechWindowOpen && !labTechConfirmed) {
+            labTechAutoSkipAt = Integer.MAX_VALUE;
+            autoFinishLabTech();
+            return true;
+        }
+        if (alliesLabTechWakeAt != Integer.MAX_VALUE) {
+            openLabTechWindow();
+            return true;
+        }
+        if (insideManWindowOpen && !insideManConfirmed) {
+            insideManAutoSkipAt = Integer.MAX_VALUE;
+            autoFinishInsideMan();
+            return true;
+        }
+        if (alliesInsideManWakeAt != Integer.MAX_VALUE) {
+            openInsideManWindow();
+            return true;
+        }
+        if (alliesWakeAllAt != Integer.MAX_VALUE && alliesTicksElapsed < alliesWakeAllAt) {
+            wakeEveryoneFromAllies();
+            alliesWakeAllAt = Integer.MAX_VALUE;
+            alliesDoneAt = alliesTicksElapsed + NIGHT_WAKE_HOLD;
+            return true;
+        }
+        return false;
+    }
+
+    /** Player left di tengah fase Allies. */
+    private void onAlliesPlayerLeft(UUID uuid, Role role, String name) {
+        if (role == Role.forensic_scientist && labTechAwaitingAnswer) {
+            // Gak ada yang bisa jawab lagi -- dijawab otomatis pakai
+            // kebenaran aslinya biar fase-nya gak macet selamanya.
+            answerLabTechnician(isPartOfSolution(labTechSelectedPos));
+            return;
+        }
+
+        if (role == Role.lab_technician && !labTechConfirmed && !labTechAwaitingAnswer
+                && labTechWindowOpen && labTechAutoSkipAt == Integer.MAX_VALUE) {
+            labTechAutoSkipAt = alliesTicksElapsed + LEAVE_TIMEOUT_TICKS;
+            labTechAutoSkipTicksLeft = LEAVE_TIMEOUT_TICKS;
+            leftLabTechUuid = uuid;
+            leftLabTechName = name;
+            hasLabTechLeft = true;
+
+            notifyRole(Role.forensic_scientist, Component.literal(name + " (Lab Technician) keluar server. Auto-skip dalam ")
+                    .withStyle(ChatFormatting.AQUA)
+                    .append(Component.literal(getOfflineRevealSeconds() + " detik").withStyle(ChatFormatting.YELLOW))
+                    .append(Component.literal(".").withStyle(ChatFormatting.AQUA))
+                    .append(skipRevealPrompt()));
+            sendActionBarToRole(Role.forensic_scientist, labTechSkipCountdownBar(getOfflineRevealSeconds()));
+        }
+
+        if (role == Role.inside_man && !insideManConfirmed
+                && insideManWindowOpen && insideManAutoSkipAt == Integer.MAX_VALUE) {
+            insideManAutoSkipAt = alliesTicksElapsed + LEAVE_TIMEOUT_TICKS;
+            insideManAutoSkipTicksLeft = LEAVE_TIMEOUT_TICKS;
+            leftInsideManUuid = uuid;
+            leftInsideManName = name;
+            hasInsideManLeft = true;
+
+            notifyRole(Role.forensic_scientist, Component.literal(name + " (Inside Man) keluar server. Auto-skip dalam ")
+                    .withStyle(ChatFormatting.DARK_RED)
+                    .append(Component.literal(getOfflineRevealSeconds() + " detik").withStyle(ChatFormatting.YELLOW))
+                    .append(Component.literal(".").withStyle(ChatFormatting.DARK_RED))
+                    .append(skipRevealPrompt()));
+            sendActionBarToRole(Role.forensic_scientist, insideManSkipCountdownBar(getOfflineRevealSeconds()));
+        }
+    }
+
     // ---------- Tick loop ----------
 
     public void tick() {
@@ -2940,6 +4406,13 @@ public class GameManager {
                 showCountdownTitle(secondsLeft);
             }
             if (countdownTicks <= 0) {
+                // Sapuan kedua, dan ini yang beneran ngerjain: pemain udah
+                // 5 detik di dimensi arena, jadi chunk-nya dijamin ke-load
+                // dan entitas display sisa game kemarin baru sekarang
+                // keliatan buat dibuang. Dipanggil PERSIS sebelum arena
+                // disusun ulang biar gak ada celah di antaranya.
+                restoreArena(serverRef);
+
                 computeRoleAssignments();
                 teleportPlayersAndDecorateArena(serverRef);
                 state = State.SHUFFLE;
@@ -2972,6 +4445,8 @@ public class GameManager {
             }
         } else if (state == State.NIGHT) {
             tickNightSequence();
+        } else if (state == State.ALLIES) {
+            tickAlliesSequence();
         } else if (state == State.DISCUSS) {
             if (PresentationManager.get().isBusy()) {
                 // Ada confession yang lagi nunggu keputusan FS atau shootout
@@ -2998,9 +4473,19 @@ public class GameManager {
             if (PresentationManager.get().isBusy()) {
                 // Sama kayak di atas -- presentasi dijeda selagi confession/shootout jalan.
             } else if (PresentationManager.get().tickPresentasi(serverRef)) {
-                if (PresentationManager.get().advanceRound(serverRef)) {
+                // Fase Allies cuma sekali seumur game: pas mau masuk ronde 2,
+                // persis kayak rulebook Undercover Allies. Dicek SEBELUM
+                // advanceRound (yang naikin nomor rondenya) soalnya jatah
+                // scene tile ronde baru ikut ditunda kalo fase itu jalan.
+                boolean alliesNext = PresentationManager.get().getRound() == 1 && hasAlliesPhaseRoles();
+
+                if (PresentationManager.get().advanceRound(serverRef, !alliesNext)) {
                     discussTicksLeft = discussTimerSeconds * 20;
-                    state = State.DISCUSS;
+                    if (alliesNext) {
+                        startAlliesSequence(serverRef);
+                    } else {
+                        state = State.DISCUSS;
+                    }
                 } else {
                     // Ronde 3 abis tanpa ada yang confess -- pembunuh gak
                     // ketauan sampe akhir, langsung menang.

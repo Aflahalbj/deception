@@ -60,6 +60,9 @@ public class SetRoleScreen extends SettingSubScreen {
             case accomplice -> "Accomplice";
             case witness -> "Witness";
             case investigator -> "Investigator";
+            case protective_detail -> "Protective Detail";
+            case lab_technician -> "Lab Technician";
+            case inside_man -> "Inside Man";
         };
     }
 

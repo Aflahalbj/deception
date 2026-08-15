@@ -87,6 +87,15 @@ public class InvestigationPaperItem extends ClueBlockItem {
         // cuma ada di server, client bakal salah predict "boleh" & itemnya
         // keliatan abis dipake padahal server nolak taro (nyangkut ilang,
         // gak balik ke inventory).
+        if (tag != null && tag.getBoolean(PresentationManager.ALLIES_LOCKED_TAG)) {
+            if (context.getPlayer() instanceof ServerPlayer sp) {
+                sp.sendSystemMessage(Component.literal(
+                        "Tunggu semua orang buka mata dulu sebelum menempel scene tile.")
+                        .withStyle(ChatFormatting.RED));
+            }
+            return InteractionResult.FAIL;
+        }
+
         if (tag != null && tag.getBoolean(PresentationManager.PLACEMENT_LOCKED_TAG)) {
             if (context.getPlayer() instanceof ServerPlayer sp) {
                 sp.sendSystemMessage(Component.literal(

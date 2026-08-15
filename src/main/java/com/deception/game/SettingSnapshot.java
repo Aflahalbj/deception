@@ -22,8 +22,14 @@ public record SettingSnapshot(
         int presentationSeconds,
         Mode accompliceMode,
         Mode witnessMode,
+        Mode protectiveDetailMode,
+        Mode labTechnicianMode,
+        Mode insideManMode,
         boolean accompliceAutoValue,
         boolean witnessAutoValue,
+        boolean protectiveDetailAutoValue,
+        boolean labTechnicianAutoValue,
+        boolean insideManAutoValue,
         boolean roleVisible,
         List<PlayerEntry> players) {
 
@@ -84,20 +90,42 @@ public record SettingSnapshot(
                 PresentationManager.get().getPresentasiTurnSeconds(),
                 Mode.of(game.getAccompliceOverride()),
                 Mode.of(game.getWitnessOverride()),
+                Mode.of(game.getProtectiveDetailOverride()),
+                Mode.of(game.getLabTechnicianOverride()),
+                Mode.of(game.getInsideManOverride()),
                 game.resolveAccompliceDefault(),
                 game.resolveWitnessDefault(),
+                game.resolveProtectiveDetailDefault(),
+                game.resolveLabTechnicianDefault(),
+                game.resolveInsideManDefault(),
                 game.isRoleVisible(),
                 players);
     }
 
+    private static boolean effective(Mode mode, boolean autoValue) {
+        return mode == Mode.AUTO ? autoValue : mode == Mode.AKTIF;
+    }
+
     /** Nilai efektif accomplice: kalau AUTO, pakai hasil tabel default. */
     public boolean accompliceEffective() {
-        return accompliceMode == Mode.AUTO ? accompliceAutoValue : accompliceMode == Mode.AKTIF;
+        return effective(accompliceMode, accompliceAutoValue);
     }
 
     /** Nilai efektif witness: kalau AUTO, pakai hasil tabel default. */
     public boolean witnessEffective() {
-        return witnessMode == Mode.AUTO ? witnessAutoValue : witnessMode == Mode.AKTIF;
+        return effective(witnessMode, witnessAutoValue);
+    }
+
+    public boolean protectiveDetailEffective() {
+        return effective(protectiveDetailMode, protectiveDetailAutoValue);
+    }
+
+    public boolean labTechnicianEffective() {
+        return effective(labTechnicianMode, labTechnicianAutoValue);
+    }
+
+    public boolean insideManEffective() {
+        return effective(insideManMode, insideManAutoValue);
     }
 
     // ------------------------------------------------- aturan pemberian role
@@ -114,6 +142,9 @@ public record SettingSnapshot(
         RoleComposition composition = new RoleComposition(players.size());
         composition.setAccompliceEnabled(accompliceEffective());
         composition.setWitnessEnabled(witnessEffective());
+        composition.setProtectiveDetailEnabled(protectiveDetailEffective());
+        composition.setLabTechnicianEnabled(labTechnicianEffective());
+        composition.setInsideManEnabled(insideManEffective());
         return composition.resolve();
     }
 
@@ -154,8 +185,14 @@ public record SettingSnapshot(
         buf.writeVarInt(presentationSeconds);
         buf.writeEnum(accompliceMode);
         buf.writeEnum(witnessMode);
+        buf.writeEnum(protectiveDetailMode);
+        buf.writeEnum(labTechnicianMode);
+        buf.writeEnum(insideManMode);
         buf.writeBoolean(accompliceAutoValue);
         buf.writeBoolean(witnessAutoValue);
+        buf.writeBoolean(protectiveDetailAutoValue);
+        buf.writeBoolean(labTechnicianAutoValue);
+        buf.writeBoolean(insideManAutoValue);
         buf.writeBoolean(roleVisible);
         buf.writeVarInt(players.size());
         for (PlayerEntry entry : players) {
@@ -170,8 +207,14 @@ public record SettingSnapshot(
         int presentationSeconds = buf.readVarInt();
         Mode accompliceMode = buf.readEnum(Mode.class);
         Mode witnessMode = buf.readEnum(Mode.class);
+        Mode protectiveDetailMode = buf.readEnum(Mode.class);
+        Mode labTechnicianMode = buf.readEnum(Mode.class);
+        Mode insideManMode = buf.readEnum(Mode.class);
         boolean accompliceAuto = buf.readBoolean();
         boolean witnessAuto = buf.readBoolean();
+        boolean protectiveDetailAuto = buf.readBoolean();
+        boolean labTechnicianAuto = buf.readBoolean();
+        boolean insideManAuto = buf.readBoolean();
         boolean roleVisible = buf.readBoolean();
 
         int size = buf.readVarInt();
@@ -181,6 +224,8 @@ public record SettingSnapshot(
         }
 
         return new SettingSnapshot(discussSeconds, presentationSeconds,
-                accompliceMode, witnessMode, accompliceAuto, witnessAuto, roleVisible, players);
+                accompliceMode, witnessMode, protectiveDetailMode, labTechnicianMode, insideManMode,
+                accompliceAuto, witnessAuto, protectiveDetailAuto, labTechnicianAuto, insideManAuto,
+                roleVisible, players);
     }
 }

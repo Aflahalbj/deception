@@ -32,6 +32,8 @@ public class ModClientSetup {
             MinecraftForge.EVENT_BUS.register(BlindfoldInputLock.class);
             MinecraftForge.EVENT_BUS.register(PoliceBadgeNameTagRenderer.class);
             MinecraftForge.EVENT_BUS.register(MovementLockClientState.class);
+            // Butuh tick client sendiri buat ngitung umur baris penolakan.
+            MinecraftForge.EVENT_BUS.register(SelectionHudState.class);
 
         });
     }
@@ -41,5 +43,6 @@ public class ModClientSetup {
         InvestigationPaperHoverOverlay.register(event);
         MurderResultOverlay.register(event);
         RoleVisibleOverlay.register(event);
+        SelectionOverlay.register(event);
     }
 }
