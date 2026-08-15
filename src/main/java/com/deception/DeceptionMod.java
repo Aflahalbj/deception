@@ -119,6 +119,9 @@ public class DeceptionMod {
             // return kalo player-nya belum punya role, padahal pas cutscene
             // peran emang belum dibagi sama sekali.
             GameManager.get().syncCutsceneOnLogin(serverPlayer.getServer(), serverPlayer);
+            // Jas FS itu visual di badan ORANG LAIN, jadi dikirim ke siapa
+            // pun yang join -- termasuk yang gak ikut main.
+            GameManager.get().syncLabCoatsTo(serverPlayer);
             GameManager.get().onPlayerRejoined(serverPlayer.getServer(), serverPlayer);
 
             // Kunci gerak itu state di CLIENT (lihat game/PlayerFreeze) dan

@@ -418,6 +418,20 @@ public class ModCommands {
                             return 1;
                         }))
 
+                // Pasang/copot jas lab di badan sendiri (atau orang lain) --
+                // murni buat ngetes tampilannya tanpa mulai game. Di game
+                // beneran jasnya dipasang otomatis ke FS pas peran di-reveal.
+                .then(literal("labcoat")
+                        .requires(src -> src.hasPermission(2))
+                        .executes(ctx -> toggleLabCoat(ctx.getSource(), null))
+                        .then(argument("playername", StringArgumentType.word())
+                                .suggests((c, builder) -> SharedSuggestionProvider.suggest(
+                                        c.getSource().getServer().getPlayerList().getPlayers().stream()
+                                                .map(p -> p.getGameProfile().getName())
+                                                .collect(Collectors.toList()), builder))
+                                .executes(ctx -> toggleLabCoat(ctx.getSource(),
+                                        StringArgumentType.getString(ctx, "playername")))))
+
                 // Debug voice chat -- lihat VoiceDebugState.
                 .then(literal("voicedebug")
                         .requires(src -> src.hasPermission(2))
@@ -559,6 +573,31 @@ public class ModCommands {
         source.sendSuccess(() -> Component.literal(
                         "  Restart server sekarang supaya arenanya benar-benar kebaca.")
                 .withStyle(ChatFormatting.YELLOW), false);
+        return 1;
+    }
+
+    /** @param playerName null = pasang di badan yang ngetik command-nya */
+    private static int toggleLabCoat(CommandSourceStack source, String playerName) {
+        net.minecraft.server.level.ServerPlayer target;
+        if (playerName == null) {
+            if (!(source.getEntity() instanceof net.minecraft.server.level.ServerPlayer self)) {
+                source.sendFailure(Component.literal("Tulis nama player-nya kalau dijalankan dari console."));
+                return 0;
+            }
+            target = self;
+        } else {
+            target = source.getServer().getPlayerList().getPlayerByName(playerName);
+            if (target == null) {
+                source.sendFailure(Component.literal("Player '" + playerName + "' tidak online."));
+                return 0;
+            }
+        }
+
+        boolean wearing = GameManager.get().toggleLabCoat(target);
+        String name = target.getGameProfile().getName();
+        source.sendSuccess(() -> Component.literal("Jas lab " + name + ": " + (wearing ? "DIPAKAI" : "DICOPOT")
+                        + (wearing ? " -- tekan F5 buat lihat." : ""))
+                .withStyle(wearing ? ChatFormatting.GREEN : ChatFormatting.GRAY), false);
         return 1;
     }
 

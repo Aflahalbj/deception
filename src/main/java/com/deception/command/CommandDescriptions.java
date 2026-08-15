@@ -131,6 +131,11 @@ public class CommandDescriptions {
                         + "-- biru kalo tim baik, merah kalo tim jahat. Gak bocorin role orang lain. "
                         + "Dipanggil tanpa on/off = cuma nampilin status sekarang. "
                         + "Bisa juga di-toggle dari /deception setting.");
+        put("labcoat", "/deception labcoat [namaplayer]", "OP",
+                "Pasang/copot jas lab di badan sendiri (atau player lain) buat NGETES tampilannya "
+                        + "-- gak ada hubungannya sama jalannya game. Di game beneran jasnya kepasang "
+                        + "otomatis ke Forensic Scientist pas peran di-reveal, dan kecopot pas game "
+                        + "selesai. Tekan F5 buat liat badan sendiri.");
         put("voicedebug", "/deception voicedebug [on|off]", "OP",
                 "Debug voice chat buat testing. Kalo ON, tiap ada mic yang nyampe server dilaporin ke "
                         + "chat SEMUA OP: siapa yang mulai/berhenti ngomong, berapa paket mic-nya, dan "

@@ -808,6 +808,10 @@ public class GameManager {
 
         MinecraftServer target = server != null ? server : serverRef;
         if (target != null) {
+            // Jas FS dicopot dari layar semua orang -- kalo enggak, dia
+            // nyangkut sampe game berikutnya (state-nya client-side).
+            clearLabCoats();
+
             // Game distop di tengah kedipan lampu -- jangan ninggalin arena
             // gelap gulita buat sesi berikutnya.
             setCutsceneLampsLit(target, true);
@@ -1261,6 +1265,61 @@ public class GameManager {
         // Role baru kebagi -- baru sekarang HUD-nya ada isinya (lihat
         // sendRoleVisibleHud; sebelum ini dia cuma bakal ngirim clear).
         syncRoleVisibleHudToAll(server);
+
+        // Jas lab-nya FS baru dipasang SEKARANG, bukan pas peran dihitung
+        // (yang jalan lebih awal di cutscene) -- jas itu keliatan semua
+        // orang, jadi kalo dipasang duluan dia bocorin siapa FS sebelum
+        // animasi reveal-nya sendiri jalan.
+        updateLabCoats();
+    }
+
+    // ---------- Jas lab (visual, lihat client/render/LabCoatLayer) ----------
+
+    /** Siapa yang lagi pake jas. Sekarang cuma FS; nambah role tinggal tambah di updateLabCoats. */
+    private final Set<UUID> labCoatWearers = new HashSet<>();
+
+    private void updateLabCoats() {
+        for (Map.Entry<UUID, Role> entry : roleAssignments.entrySet()) {
+            if (entry.getValue() == Role.forensic_scientist) {
+                labCoatWearers.add(entry.getKey());
+                com.deception.network.ModNetworking.broadcastLabCoat(entry.getKey(), true);
+            }
+        }
+    }
+
+    /**
+     * Kirim daftar pemake jas ke SATU client. Dipanggil buat SEMUA yang
+     * baru join (bukan cuma peserta): jas itu visual di badan orang lain,
+     * jadi penonton/admin yang baru masuk juga harus keliatan sama dia.
+     */
+    public void syncLabCoatsTo(ServerPlayer player) {
+        for (UUID uuid : labCoatWearers) {
+            com.deception.network.ModNetworking.sendLabCoat(player, uuid, true);
+        }
+    }
+
+    /**
+     * Pasang/copot jas manual di luar alur game -- buat ngetes tampilannya
+     * tanpa harus mulai game beneran (lihat /deception labcoat).
+     *
+     * @return kondisi jas setelah di-toggle
+     */
+    public boolean toggleLabCoat(ServerPlayer target) {
+        boolean wearing = !labCoatWearers.contains(target.getUUID());
+        if (wearing) {
+            labCoatWearers.add(target.getUUID());
+        } else {
+            labCoatWearers.remove(target.getUUID());
+        }
+        com.deception.network.ModNetworking.broadcastLabCoat(target.getUUID(), wearing);
+        return wearing;
+    }
+
+    private void clearLabCoats() {
+        for (UUID uuid : labCoatWearers) {
+            com.deception.network.ModNetworking.broadcastLabCoat(uuid, false);
+        }
+        labCoatWearers.clear();
     }
 
     private static final int NIGHT_PRECLOSE_DELAY = 60;

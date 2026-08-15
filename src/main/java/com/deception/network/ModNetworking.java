@@ -98,6 +98,10 @@ public class ModNetworking {
                 CutscenePacket::encode,
                 CutscenePacket::decode,
                 CutscenePacket::handle);
+        CHANNEL.registerMessage(packetId++, LabCoatPacket.class,
+                LabCoatPacket::encode,
+                LabCoatPacket::decode,
+                LabCoatPacket::handle);
     }
 
     public static void sendBlindfoldState(ServerPlayer player, boolean closing) {
@@ -205,5 +209,15 @@ public class ModNetworking {
     /** Bersihin state cutscene di layar player ini (kamera bebas lagi, gambar ilang). */
     public static void clearCutscene(ServerPlayer player) {
         sendCutscene(player, false, 0F, 0F, false);
+    }
+
+    /** Pasang/copot jas lab di badan pemain ini, di layar SEMUA orang. */
+    public static void broadcastLabCoat(UUID uuid, boolean wearing) {
+        CHANNEL.send(PacketDistributor.ALL.noArg(), new LabCoatPacket(uuid, wearing));
+    }
+
+    /** Sinkron ulang jas ke SATU client -- dipake pas ada yang baru join. */
+    public static void sendLabCoat(ServerPlayer player, UUID uuid, boolean wearing) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new LabCoatPacket(uuid, wearing));
     }
 }

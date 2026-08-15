@@ -40,6 +40,8 @@ public class ModClientSetup {
             // Kunci kamera pas cutscene intro -- perlu hook tick + frame
             // sendiri, lihat javadoc CutsceneClientState.
             MinecraftForge.EVENT_BUS.register(CutsceneClientState.class);
+            // Cuma butuh hook logout, buat buang daftar pemake jas.
+            MinecraftForge.EVENT_BUS.register(LabCoatClientState.class);
 
         });
     }
