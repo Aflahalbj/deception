@@ -22,6 +22,9 @@ public class ModClientSetup {
                 ItemBlockRenderTypes.setRenderLayer(block.get(), RenderType.cutout());
             }
             ItemBlockRenderTypes.setRenderLayer(ModBlocks.INVESTIGATION_PAPER.get(), RenderType.cutout());
+            // Sama kayak lantern vanilla -- modelnya punya bagian tembus
+            // pandang (rantai/bingkai), bakal item hitam kalo di layer solid.
+            ItemBlockRenderTypes.setRenderLayer(ModBlocks.DEAD_LANTERN.get(), RenderType.cutout());
 
             MinecraftForge.EVENT_BUS.register(ClusterHoverOverlay.class);
             MinecraftForge.EVENT_BUS.register(BlindfoldClientState.class);

@@ -6,6 +6,8 @@ import com.deception.block.FlagPoleBlock;
 import com.deception.block.HongkongFlagBlock;
 import com.deception.block.InvestigationPaperBlock;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LanternBlock;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.material.MapColor;
 import net.minecraftforge.registries.DeferredRegister;
@@ -354,6 +356,18 @@ public class ModBlocks {
                     .noOcclusion()
                     .sound(SoundType.METAL)
                     .strength(1.5F)));
+
+    // Lentera MATI: bentuk & hitbox persis lantern vanilla (kelas block-nya
+    // emang dipake ulang), bedanya cuma dua -- lightLevel 0 dan texture-nya
+    // versi gelap. Dipake buat efek kedip: tinggal tukar-tukar block ini
+    // sama minecraft:lantern di posisi yang sama.
+    //
+    // Kenapa block baru, bukan lantern vanilla yang dimatiin: nilai cahaya
+    // itu dipatok pas block DIDAFTARIN, bukan per-block di dunia -- gak ada
+    // blockstate/NBT/command yang bisa ngubahnya.
+    public static final RegistryObject<Block> DEAD_LANTERN = BLOCKS.register("dead_lantern",
+            () -> new LanternBlock(Block.Properties.copy(Blocks.LANTERN)
+                    .lightLevel(state -> 0)));
 
     // Ujung tiang + kain bendera Hong Kong 3x2 block yang berkibar
     // (kainnya digambar HongkongFlagRenderer, bukan block).

@@ -51,6 +51,10 @@ public class ModItems {
     public static final RegistryObject<Item> HONGKONG_FLAG = ITEMS.register("hongkong_flag",
             () -> new BlockItem(ModBlocks.HONGKONG_FLAG.get(), new Item.Properties()));
 
+    // Lentera mati (lightLevel 0) -- lihat ModBlocks.DEAD_LANTERN.
+    public static final RegistryObject<Item> DEAD_LANTERN = ITEMS.register("dead_lantern",
+            () -> new BlockItem(ModBlocks.DEAD_LANTERN.get(), new Item.Properties()));
+
     // tab "Clue" — item yang nama-nya diawali "clue_", plus investigation paper
     public static final RegistryObject<CreativeModeTab> CLUE_TAB = CREATIVE_TABS.register("clue_tab", () ->
             CreativeModeTab.builder()
@@ -63,6 +67,7 @@ public class ModItems {
                         output.accept(INVESTIGATION_PAPER.get());
                         output.accept(FLAG_POLE.get());
                         output.accept(HONGKONG_FLAG.get());
+                        output.accept(DEAD_LANTERN.get());
                     })
                     .build());
 

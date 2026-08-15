@@ -1,0 +1,6 @@
+{
+  "variants": {
+    "hanging=false": { "model": "deception:block/dead_lantern" },
+    "hanging=true": { "model": "deception:block/dead_lantern_hanging" }
+  }
+}

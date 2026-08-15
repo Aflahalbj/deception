@@ -86,9 +86,16 @@ public class GameManager {
     private int lastCountdownSecondShown = -1;
 
     // ---------- Cutscene intro (di antara countdown & ngocok peran) ----------
-    // Urutannya (1 beat = 2 detik): semua jadi spectator & dipaku ngadep
-    // arena -> gambar intro -> petir 1 -> petir 2 -> selesai (adventure,
-    // ditarik ke cluster, peran mulai dikocok).
+    // Urutannya (1 beat = 2 detik):
+    //   0   semua jadi spectator & dipaku ngadep arena, waktu dunia dipatok
+    //   40  gambar intro muncul
+    //   80  petir 1
+    //   120 petir 2
+    //   160 gambar ilang, adventure, tiap orang ditaro di depan cluster-nya
+    //       sendiri (FS di depan board), kunci gerak & kamera DILEPAS --
+    //       lampu mulai kedip ala film (lihat CUTSCENE_LAMP_PATTERN)
+    //   204 kedipan kelar, lampu nyala tetap
+    //   244 peran mulai dikocok
     private static final int CUTSCENE_TIME_OF_DAY = 21500;
     private static final double CUTSCENE_X = 127.0;
     private static final double CUTSCENE_Y = -18.687;
@@ -101,7 +108,53 @@ public class GameManager {
     private static final int CUTSCENE_IMAGE_AT = CUTSCENE_BEAT;
     private static final int CUTSCENE_LIGHTNING_1_AT = CUTSCENE_BEAT * 2;
     private static final int CUTSCENE_LIGHTNING_2_AT = CUTSCENE_BEAT * 3;
-    private static final int CUTSCENE_DONE_AT = CUTSCENE_BEAT * 4;
+
+    /** Tick pas semua orang pindah dari titik nonton ke depan cluster masing-masing. */
+    private static final int CUTSCENE_LINEUP_AT = CUTSCENE_BEAT * 4;
+
+    /**
+     * Pola kedipan lampu ala film: lampu yang "susah nyala". Tiap baris
+     * {nyala?, lama dalam tick} -- 1 tick = 50 ms, jadi kedipan 1-2 tick itu
+     * kilatan pendek, bukan nyala beneran.
+     *
+     * <p>Iramanya sengaja gak rata: kilatan pendek dulu, terus ada jeda
+     * gelap panjang (kesannya "gagal nyala"), baru stutter cepat yang makin
+     * rapet sampe akhirnya nyala tetap. Kalo intervalnya seragam, yang
+     * kebentuk malah kesan lampu disko, bukan lampu rusak.
+     *
+     * <p>Baris pertama HARUS mati & baris terakhir HARUS mati -- setelah
+     * pola habis, lampunya nyala dan tetep nyala.
+     */
+    private static final int[][] CUTSCENE_LAMP_PATTERN = {
+            {0, 6}, {1, 1},
+            {0, 5}, {1, 2},
+            {0, 3}, {1, 1},
+            {0, 9}, {1, 3},   // jeda gelap panjang, terus nyala setengah jalan
+            {0, 2}, {1, 1},
+            {0, 4}, {1, 2},
+            {0, 1}, {1, 1},
+            {0, 3},
+    };
+
+    /** Tick pas lampu nyala tetap (persis abis pola kedipan di atas habis). */
+    private static final int CUTSCENE_LAMP_LAST_AT =
+            CUTSCENE_LINEUP_AT + totalPatternTicks(CUTSCENE_LAMP_PATTERN);
+
+    /** Kedipan terakhir + 2 detik jeda, baru peran dikocok. */
+    private static final int CUTSCENE_DONE_AT = CUTSCENE_LAMP_LAST_AT + CUTSCENE_BEAT;
+
+    // Kotak lampu yang ikut kedip (dua sudut, urutannya bebas). Yang
+    // disentuh cuma lantern & light block di dalam kotak ini.
+    private static final BlockPos CUTSCENE_LAMP_CORNER_A = new BlockPos(130, -53, 189);
+    private static final BlockPos CUTSCENE_LAMP_CORNER_B = new BlockPos(108, -59, 169);
+
+    // Posisi lampu di-scan SEKALI pas kedipan mulai, terus tinggal
+    // ditoggle. Kalo tiap kedipan nyisir ulang kotaknya, 3000-an block
+    // dibaca 4 kali percuma.
+    private final List<BlockPos> cutsceneLanternPositions = new ArrayList<>();
+    private final List<BlockPos> cutsceneLightPositions = new ArrayList<>();
+    /** Level asli tiap light block (sejajar sama list di atas) -- dipake pas nyalain lagi. */
+    private final List<Integer> cutsceneLightLevels = new ArrayList<>();
 
     /**
      * Penanda "player ini lagi dalam kondisi cutscene" yang ditulis ke
@@ -755,6 +808,13 @@ public class GameManager {
 
         MinecraftServer target = server != null ? server : serverRef;
         if (target != null) {
+            // Game distop di tengah kedipan lampu -- jangan ninggalin arena
+            // gelap gulita buat sesi berikutnya.
+            setCutsceneLampsLit(target, true);
+            cutsceneLanternPositions.clear();
+            cutsceneLightPositions.clear();
+            cutsceneLightLevels.clear();
+
             target.setPvpAllowed(true);
             if (previousDifficulty != null) {
                 target.setDifficulty(previousDifficulty, true);
@@ -4428,13 +4488,11 @@ public class GameManager {
     // ---------- Fase kocok peran ----------
 
     /**
-     * Susun arena (cluster + kepala pemilik), bagi peran, terus mulai
-     * animasi "Mengocok Peran". Dipisah dari tick() soalnya pemanggilnya
-     * sekarang cutscene, bukan countdown.
+     * Mulai animasi "Mengocok Peran". Arena & pembagian peran-nya sendiri
+     * udah dikerjain lebih awal (startCutsceneLineup) -- wajib duluan, soalnya
+     * posisi berdiri tiap orang di akhir cutscene butuh dua-duanya.
      */
     private void beginShufflePhase() {
-        computeRoleAssignments();
-        teleportPlayersAndDecorateArena(serverRef);
         state = State.SHUFFLE;
         shuffleTicksLeft = SHUFFLE_DURATION_TICKS;
         activeRolePool = computeActiveRolePool();
@@ -4476,6 +4534,14 @@ public class GameManager {
     private void tickCutscene() {
         cutsceneTicks++;
 
+        if (cutsceneTicks == CUTSCENE_LINEUP_AT) {
+            startCutsceneLineup();
+        } else if (cutsceneTicks > CUTSCENE_LINEUP_AT && cutsceneTicks <= CUTSCENE_LAMP_LAST_AT) {
+            // Langkah pertama (mati) udah dikerjain startCutsceneLineup.
+            Boolean lit = lampStateAt(cutsceneTicks - CUTSCENE_LINEUP_AT);
+            if (lit != null) setCutsceneLampsLit(serverRef, lit);
+        }
+
         if (cutsceneTicks == CUTSCENE_IMAGE_AT) {
             for (UUID uuid : registeredPlayers) {
                 ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
@@ -4499,14 +4565,162 @@ public class GameManager {
         }
     }
 
-    /** Cutscene kelar: balikin semua ke adventure, lanjut ke alur normal (cluster + kocok peran). */
+    /**
+     * Babak kedua cutscene: dari titik nonton bareng, tiap orang dipindah
+     * ke depan cluster punya dia sendiri (FS ke depan board) -- posisinya
+     * sama persis kayak barisan fase shootout, lihat getClusterLineupSpot.
+     *
+     * <p>Di sini juga arena baru beneran disusun & peran dibagi, soalnya
+     * dua-duanya SYARAT buat tau siapa berdiri di mana: cluster-nya belum
+     * ada sebelum teleportPlayersAndDecorateArena jalan, dan "siapa FS"
+     * belum ketauan sebelum computeRoleAssignments. Yang dikocok di depan
+     * mata pemain nanti (fase SHUFFLE) cuma animasinya.
+     */
+    private void startCutsceneLineup() {
+        computeRoleAssignments();
+        teleportPlayersAndDecorateArena(serverRef);
+
+        for (UUID uuid : registeredPlayers) {
+            ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
+            if (player != null) applyLineupCutsceneTo(player);
+        }
+
+        scanCutsceneLamps(ArenaDimension.level(serverRef));
+        setCutsceneLampsLit(serverRef, false); // langkah pertama: mati
+    }
+
+    /** Cutscene kelar: kunci dilepas, peran mulai dikocok. */
     private void finishCutscene() {
+        // Jaring pengaman: apa pun yang kejadian di tengah kedipan, lampu
+        // WAJIB ditinggal nyala.
+        setCutsceneLampsLit(serverRef, true);
+        cutsceneLanternPositions.clear();
+        cutsceneLightPositions.clear();
+        cutsceneLightLevels.clear();
+
         for (UUID uuid : registeredPlayers) {
             ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
             if (player != null) exitCutsceneFor(player, GameType.ADVENTURE);
         }
         cutsceneTicks = 0;
         beginShufflePhase();
+    }
+
+    /**
+     * Pasang kondisi cutscene babak kedua ke SATU player: adventure, berdiri
+     * di depan cluster-nya, terus DILEPAS -- badan sama kamera bebas selama
+     * lampunya kedip, biar bisa nengok sekeliling.
+     *
+     * <p>Penanda cutscene tetep dipasang walaupun udah gak dikunci: itu yang
+     * dipake buat benerin orang yang DC di tengah babak ini (lihat
+     * syncCutsceneOnLogin), bukan buat nandain "lagi kekunci".
+     */
+    private void applyLineupCutsceneTo(ServerPlayer player) {
+        MinecraftServer server = player.getServer();
+        if (server == null) return;
+
+        player.setGameMode(GameType.ADVENTURE);
+        player.setCamera(player);
+
+        LineupSpot spot = lineupSpotFor(player.getUUID());
+        ServerLevel arena = ArenaDimension.level(server);
+        player.teleportTo(arena, spot.x(), spot.y(), spot.z(), spot.yaw(), 0.0F);
+
+        // Lepas kuncian babak pertama: unfreeze balikin gravitasi + input
+        // gerak, clearCutscene ngelepas kamera sekalian nyopot gambar intro
+        // (yang harus dilihat sekarang lampunya, bukan tulisan).
+        PlayerFreeze.unfreeze(player);
+        com.deception.network.ModNetworking.clearCutscene(player);
+        setCutsceneMarker(player, true);
+    }
+
+    /** Titik berdiri tiap orang pas cutscene kelar. Fallback ke titik kumpul kalo dia gak punya cluster. */
+    private LineupSpot lineupSpotFor(UUID uuid) {
+        LineupSpot spot = roleAssignments.get(uuid) == Role.forensic_scientist
+                ? getForensicBoardSpot()
+                : getClusterLineupSpot(uuid);
+        if (spot != null) return spot;
+        return new LineupSpot(
+                ARENA_TELEPORT_POS.getX() + 0.5, ARENA_TELEPORT_POS.getY(),
+                ARENA_TELEPORT_POS.getZ() + 0.5, 0.0F);
+    }
+
+    private static int totalPatternTicks(int[][] pattern) {
+        int total = 0;
+        for (int[] step : pattern) total += step[1];
+        return total;
+    }
+
+    /**
+     * Kondisi lampu pas offset tick ini, atau null kalo offset-nya jatuh di
+     * TENGAH sebuah langkah (gak ada yang perlu diubah tick itu -- penting,
+     * biar block-nya gak di-set ulang tiap tick percuma).
+     */
+    private static Boolean lampStateAt(int offset) {
+        int t = 0;
+        for (int[] step : CUTSCENE_LAMP_PATTERN) {
+            if (offset == t) return step[0] == 1;
+            t += step[1];
+        }
+        // Pola habis -> nyala, dan seterusnya tetep nyala.
+        return offset == t ? Boolean.TRUE : null;
+    }
+
+    /** Catat posisi semua lantern & light block di kotak kedipan, sekali aja. */
+    private void scanCutsceneLamps(ServerLevel level) {
+        cutsceneLanternPositions.clear();
+        cutsceneLightPositions.clear();
+        cutsceneLightLevels.clear();
+
+        for (BlockPos pos : BlockPos.betweenClosed(CUTSCENE_LAMP_CORNER_A, CUTSCENE_LAMP_CORNER_B)) {
+            BlockState state = level.getBlockState(pos);
+            if (state.is(Blocks.LANTERN) || state.is(ModBlocks.DEAD_LANTERN.get())) {
+                cutsceneLanternPositions.add(pos.immutable());
+            } else if (state.is(Blocks.LIGHT)) {
+                cutsceneLightPositions.add(pos.immutable());
+                // Level aslinya diinget, bukan dipukul rata 15: light block
+                // di arena bisa aja sengaja disetel redup, dan pas cutscene
+                // kelar dia harus balik persis kayak semula.
+                cutsceneLightLevels.add(state.getValue(net.minecraft.world.level.block.LightBlock.LEVEL));
+            }
+        }
+    }
+
+    /**
+     * Nyalain/matiin lampu yang udah dicatat. Lantern-nya DIGANTI block
+     * (vanilla <-> deception:dead_lantern) soalnya nilai cahaya lantern
+     * dipatok pas block didaftarin, gak bisa diubah per-block; light block
+     * cukup ganti properti level-nya.
+     */
+    private void setCutsceneLampsLit(MinecraftServer server, boolean lit) {
+        if (server == null) return;
+        if (cutsceneLanternPositions.isEmpty() && cutsceneLightPositions.isEmpty()) return;
+
+        ServerLevel level = ArenaDimension.level(server);
+
+        BlockState lantern = (lit ? Blocks.LANTERN : ModBlocks.DEAD_LANTERN.get())
+                .defaultBlockState()
+                .setValue(net.minecraft.world.level.block.LanternBlock.HANGING, true);
+        for (BlockPos pos : cutsceneLanternPositions) {
+            level.setBlock(pos, copyWaterlogged(level.getBlockState(pos), lantern), 3);
+        }
+
+        for (int i = 0; i < cutsceneLightPositions.size(); i++) {
+            BlockPos pos = cutsceneLightPositions.get(i);
+            BlockState light = Blocks.LIGHT.defaultBlockState().setValue(
+                    net.minecraft.world.level.block.LightBlock.LEVEL,
+                    lit ? cutsceneLightLevels.get(i) : 0);
+            level.setBlock(pos, copyWaterlogged(level.getBlockState(pos), light), 3);
+        }
+    }
+
+    /** Bawa nilai waterlogged block lama ke block penggantinya, biar lampu di dalam air gak ngeringin airnya. */
+    private static BlockState copyWaterlogged(BlockState from, BlockState to) {
+        var waterlogged = net.minecraft.world.level.block.state.properties.BlockStateProperties.WATERLOGGED;
+        if (from.hasProperty(waterlogged) && to.hasProperty(waterlogged)) {
+            return to.setValue(waterlogged, from.getValue(waterlogged));
+        }
+        return to;
     }
 
     /**
@@ -4569,7 +4783,13 @@ public class GameManager {
         boolean registered = registeredPlayers.contains(player.getUUID());
 
         if (state == State.CUTSCENE && registered) {
-            applyCutsceneTo(player, cutsceneTicks >= CUTSCENE_IMAGE_AT);
+            if (cutsceneTicks >= CUTSCENE_LINEUP_AT) {
+                // Babak kedua: yang lain udah berdiri di depan cluster
+                // masing-masing, dia ikut ditaro di tempatnya sendiri.
+                applyLineupCutsceneTo(player);
+            } else {
+                applyCutsceneTo(player, cutsceneTicks >= CUTSCENE_IMAGE_AT);
+            }
             return;
         }
 
@@ -4579,12 +4799,12 @@ public class GameManager {
         exitCutsceneFor(player, gameRunning ? GameType.ADVENTURE : GameType.SURVIVAL);
 
         if (gameRunning) {
-            // Dia kelewat teleport massal ke arena pas cutscene kelar --
-            // taro di titik kumpul yang sama kayak yang lain.
+            // Dia kelewat teleport pas cutscene kelar -- taro di depan
+            // cluster-nya sendiri, tempat dia seharusnya berdiri (fallback
+            // ke titik kumpul kalo dia gak kebagian cluster).
+            LineupSpot spot = lineupSpotFor(player.getUUID());
             ServerLevel arena = ArenaDimension.level(server);
-            player.teleportTo(arena,
-                    ARENA_TELEPORT_POS.getX() + 0.5, ARENA_TELEPORT_POS.getY(),
-                    ARENA_TELEPORT_POS.getZ() + 0.5, player.getYRot(), 0.0F);
+            player.teleportTo(arena, spot.x(), spot.y(), spot.z(), spot.yaw(), 0.0F);
         }
     }
 
