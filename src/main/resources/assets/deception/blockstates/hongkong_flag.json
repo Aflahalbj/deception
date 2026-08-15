@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=north": { "model": "deception:block/hongkong_flag" },
+    "facing=east":  { "model": "deception:block/hongkong_flag", "y": 90 },
+    "facing=south": { "model": "deception:block/hongkong_flag", "y": 180 },
+    "facing=west":  { "model": "deception:block/hongkong_flag", "y": 270 }
+  }
+}

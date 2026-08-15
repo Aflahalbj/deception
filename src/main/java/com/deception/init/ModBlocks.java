@@ -2,6 +2,8 @@ package com.deception.init;
 
 import com.deception.DeceptionMod;
 import com.deception.block.ClueBlock;
+import com.deception.block.FlagPoleBlock;
+import com.deception.block.HongkongFlagBlock;
 import com.deception.block.InvestigationPaperBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.SoundType;
@@ -343,4 +345,22 @@ public class ModBlocks {
                     .sound(SoundType.WOOL)
                     .strength(0.1F)
                     .instabreak()));
+
+    // Tiang bendera -- block dekoratif, ditumpuk buat bikin tiang setinggi
+    // apa pun. Ruas paling atas diganti HONGKONG_FLAG.
+    public static final RegistryObject<Block> FLAG_POLE = BLOCKS.register("flag_pole",
+            () -> new FlagPoleBlock(Block.Properties.of()
+                    .mapColor(MapColor.METAL)
+                    .noOcclusion()
+                    .sound(SoundType.METAL)
+                    .strength(1.5F)));
+
+    // Ujung tiang + kain bendera Hong Kong 3x2 block yang berkibar
+    // (kainnya digambar HongkongFlagRenderer, bukan block).
+    public static final RegistryObject<Block> HONGKONG_FLAG = BLOCKS.register("hongkong_flag",
+            () -> new HongkongFlagBlock(Block.Properties.of()
+                    .mapColor(MapColor.COLOR_RED)
+                    .noOcclusion()
+                    .sound(SoundType.METAL)
+                    .strength(1.5F)));
 }

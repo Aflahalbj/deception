@@ -94,6 +94,10 @@ public class ModNetworking {
                 SelectionHudPacket::encode,
                 SelectionHudPacket::decode,
                 SelectionHudPacket::handle);
+        CHANNEL.registerMessage(packetId++, CutscenePacket.class,
+                CutscenePacket::encode,
+                CutscenePacket::decode,
+                CutscenePacket::handle);
     }
 
     public static void sendBlindfoldState(ServerPlayer player, boolean closing) {
@@ -190,5 +194,16 @@ public class ModNetworking {
     /** Copot panel pilihan dari layar player ini. */
     public static void clearSelectionHud(ServerPlayer player) {
         sendSelectionHud(player, SelectionHudPacket.hidden());
+    }
+
+    /** Kunci kamera + gambar intro cutscene -- lihat GameManager#startCutscene. */
+    public static void sendCutscene(ServerPlayer player, boolean active, float yaw, float pitch, boolean showImage) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new CutscenePacket(active, yaw, pitch, showImage));
+    }
+
+    /** Bersihin state cutscene di layar player ini (kamera bebas lagi, gambar ilang). */
+    public static void clearCutscene(ServerPlayer player) {
+        sendCutscene(player, false, 0F, 0F, false);
     }
 }

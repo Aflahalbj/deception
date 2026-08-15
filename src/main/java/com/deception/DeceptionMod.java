@@ -115,6 +115,10 @@ public class DeceptionMod {
     public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
         if (event.getEntity() instanceof ServerPlayer serverPlayer) {
             GameManager.get().refreshOwnerHeadSkin(serverPlayer.getServer(), serverPlayer.getUUID());
+            // WAJIB duluan sebelum onPlayerRejoined: yang itu langsung
+            // return kalo player-nya belum punya role, padahal pas cutscene
+            // peran emang belum dibagi sama sekali.
+            GameManager.get().syncCutsceneOnLogin(serverPlayer.getServer(), serverPlayer);
             GameManager.get().onPlayerRejoined(serverPlayer.getServer(), serverPlayer);
 
             // Kunci gerak itu state di CLIENT (lihat game/PlayerFreeze) dan

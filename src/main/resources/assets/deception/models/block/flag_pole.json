@@ -1,0 +1,21 @@
+{
+  "parent": "block/block",
+  "textures": {
+    "pole": "deception:block/flag_pole",
+    "particle": "deception:block/flag_pole"
+  },
+  "elements": [
+    {
+      "from": [6, 0, 6],
+      "to": [10, 16, 10],
+      "faces": {
+        "north": { "uv": [6, 0, 10, 16], "texture": "#pole" },
+        "south": { "uv": [6, 0, 10, 16], "texture": "#pole" },
+        "west":  { "uv": [6, 0, 10, 16], "texture": "#pole" },
+        "east":  { "uv": [6, 0, 10, 16], "texture": "#pole" },
+        "up":    { "uv": [6, 6, 10, 10], "texture": "#pole" },
+        "down":  { "uv": [6, 6, 10, 10], "texture": "#pole" }
+      }
+    }
+  ]
+}

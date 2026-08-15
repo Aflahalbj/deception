@@ -45,7 +45,15 @@ public class PlayerFreeze {
 
     /** Teleport ke titik yang dimau (sekalian ngadep arah yaw), terus paku di situ. */
     public static void freezeAt(ServerPlayer player, double x, double y, double z, float yaw) {
-        player.teleportTo(player.serverLevel(), x, y, z, yaw, 0.0F);
+        freezeAt(player, x, y, z, yaw, 0.0F);
+    }
+
+    /**
+     * Sama kayak di atas tapi sekalian nentuin pitch -- dipake cutscene
+     * intro, yang arah pandangnya emang dipatok (lihat GameManager#startCutscene).
+     */
+    public static void freezeAt(ServerPlayer player, double x, double y, double z, float yaw, float pitch) {
+        player.teleportTo(player.serverLevel(), x, y, z, yaw, pitch);
         player.setDeltaMovement(0, 0, 0);
         player.hurtMarked = true; // paksa client sinkron delta movement 0
         // Matiin gravitasi selama dibekuin: tanpa ini, kalo titik berdirinya

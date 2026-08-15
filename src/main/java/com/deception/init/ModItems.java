@@ -5,6 +5,7 @@ import com.deception.block.ClueBlockItem;
 import com.deception.item.InvestigationPaperItem;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -42,6 +43,14 @@ public class ModItems {
     public static final RegistryObject<Item> INVESTIGATION_PAPER = ITEMS.register("investigation_paper",
             () -> new InvestigationPaperItem("investigation_paper", ModBlocks.INVESTIGATION_PAPER.get(), new Item.Properties()));
 
+    // Tiang bendera + bendera Hong Kong. BlockItem biasa (bukan
+    // ClueBlockItem) -- nama tampilnya pake key default "block.deception.<id>".
+    public static final RegistryObject<Item> FLAG_POLE = ITEMS.register("flag_pole",
+            () -> new BlockItem(ModBlocks.FLAG_POLE.get(), new Item.Properties()));
+
+    public static final RegistryObject<Item> HONGKONG_FLAG = ITEMS.register("hongkong_flag",
+            () -> new BlockItem(ModBlocks.HONGKONG_FLAG.get(), new Item.Properties()));
+
     // tab "Clue" — item yang nama-nya diawali "clue_", plus investigation paper
     public static final RegistryObject<CreativeModeTab> CLUE_TAB = CREATIVE_TABS.register("clue_tab", () ->
             CreativeModeTab.builder()
@@ -52,6 +61,8 @@ public class ModItems {
                             if (id.startsWith("clue_")) output.accept(item.get());
                         });
                         output.accept(INVESTIGATION_PAPER.get());
+                        output.accept(FLAG_POLE.get());
+                        output.accept(HONGKONG_FLAG.get());
                     })
                     .build());
 

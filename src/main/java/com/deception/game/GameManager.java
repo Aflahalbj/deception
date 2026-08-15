@@ -52,7 +52,7 @@ import java.util.*;
 public class GameManager {
 
     public enum State {
-        IDLE, COUNTDOWN, SHUFFLE, REVEAL_DELAY, NIGHT, DISCUSS, PRESENTASI, ALLIES, RUNNING
+        IDLE, COUNTDOWN, CUTSCENE, SHUFFLE, REVEAL_DELAY, NIGHT, DISCUSS, PRESENTASI, ALLIES, RUNNING
     }
 
     private static final GameManager INSTANCE = new GameManager();
@@ -84,6 +84,35 @@ public class GameManager {
     private static final int COUNTDOWN_SECONDS = 5;
     private int countdownTicks = 0;
     private int lastCountdownSecondShown = -1;
+
+    // ---------- Cutscene intro (di antara countdown & ngocok peran) ----------
+    // Urutannya (1 beat = 2 detik): semua jadi spectator & dipaku ngadep
+    // arena -> gambar intro -> petir 1 -> petir 2 -> selesai (adventure,
+    // ditarik ke cluster, peran mulai dikocok).
+    private static final int CUTSCENE_TIME_OF_DAY = 21500;
+    private static final double CUTSCENE_X = 127.0;
+    private static final double CUTSCENE_Y = -18.687;
+    private static final double CUTSCENE_Z = 96.685;
+    private static final float CUTSCENE_YAW = 120.3F;
+    private static final float CUTSCENE_PITCH = -14.8F;
+    private static final BlockPos CUTSCENE_LIGHTNING_1 = new BlockPos(98, -14, 90);
+    private static final BlockPos CUTSCENE_LIGHTNING_2 = new BlockPos(116, -17, 62);
+    private static final int CUTSCENE_BEAT = 40; // 2 detik
+    private static final int CUTSCENE_IMAGE_AT = CUTSCENE_BEAT;
+    private static final int CUTSCENE_LIGHTNING_1_AT = CUTSCENE_BEAT * 2;
+    private static final int CUTSCENE_LIGHTNING_2_AT = CUTSCENE_BEAT * 3;
+    private static final int CUTSCENE_DONE_AT = CUTSCENE_BEAT * 4;
+
+    /**
+     * Penanda "player ini lagi dalam kondisi cutscene" yang ditulis ke
+     * playerdata-nya (bukan cuma di memori). Ini yang bikin player yang
+     * DC di tengah cutscene gak nyangkut jadi spectator: pas dia join lagi
+     * -- bahkan kalo server-nya sempet restart -- penanda ini kebaca dan
+     * kondisinya disamain sama fase yang lagi jalan (lihat syncCutsceneOnLogin).
+     */
+    private static final String CUTSCENE_NBT_KEY = "DeceptionCutscene";
+
+    private int cutsceneTicks = 0;
 
     // ---------- Shuffle role (animasi "ngocok" peran) ----------
     private static final int SHUFFLE_DURATION_TICKS = 100; // 5 detik
@@ -681,6 +710,7 @@ public class GameManager {
         this.state = State.IDLE;
         this.roleAssignments.clear();
         this.countdownTicks = 0;
+        this.cutsceneTicks = 0;
         this.lastCountdownSecondShown = -1;
         this.shuffleTicksLeft = 0;
         this.discussTicksLeft = 0;
@@ -746,7 +776,11 @@ public class GameManager {
             for (UUID uuid : registeredPlayers) {
                 ServerPlayer player = target.getPlayerList().getPlayer(uuid);
                 if (player != null) {
-                    player.setGameMode(GameType.SURVIVAL);
+                    // Game distop di tengah cutscene: lepas kunci kamera,
+                    // copot gambar intro & penandanya. Harus duluan sebelum
+                    // gamemode di-set, biar gak ada yang ketinggalan
+                    // spectator + kamera kepaku.
+                    exitCutsceneFor(player, GameType.SURVIVAL);
 
                     // Bersihin inventory (termasuk armor/noteblock di slot
                     // kepala) & semua effect (glowing dll) yang mungkin
@@ -4391,6 +4425,216 @@ public class GameManager {
         }
     }
 
+    // ---------- Fase kocok peran ----------
+
+    /**
+     * Susun arena (cluster + kepala pemilik), bagi peran, terus mulai
+     * animasi "Mengocok Peran". Dipisah dari tick() soalnya pemanggilnya
+     * sekarang cutscene, bukan countdown.
+     */
+    private void beginShufflePhase() {
+        computeRoleAssignments();
+        teleportPlayersAndDecorateArena(serverRef);
+        state = State.SHUFFLE;
+        shuffleTicksLeft = SHUFFLE_DURATION_TICKS;
+        activeRolePool = computeActiveRolePool();
+        for (UUID uuid : registeredPlayers) {
+            ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
+            if (player != null) {
+                sendTitle(
+                    player,
+                    Component.literal("Mengocok Peran").withStyle(ChatFormatting.GOLD),
+                    Component.empty(),
+                    0, SHUFFLE_DURATION_TICKS, 0
+                );
+            }
+        }
+    }
+
+    // ---------- Cutscene intro ----------
+
+    /**
+     * Mulai cutscene: waktu dunia dipatok malam, semua peserta jadi
+     * spectator, ditarik ke satu titik pandang yang sama, terus dipaku
+     * (badan sama kameranya) sampe cutscene kelar.
+     *
+     * <p>Gamemode-nya SPECTATOR, bukan adventure yang dibekuin: badan
+     * playernya jadi gak keliatan satu sama lain, jadi gak ada 12 orang
+     * numpuk nutupin pemandangan di titik kamera yang sama.
+     */
+    private void startCutscene(MinecraftServer server) {
+        state = State.CUTSCENE;
+        cutsceneTicks = 0;
+        setCutsceneTime(server);
+
+        for (UUID uuid : registeredPlayers) {
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player != null) applyCutsceneTo(player, false);
+        }
+    }
+
+    private void tickCutscene() {
+        cutsceneTicks++;
+
+        if (cutsceneTicks == CUTSCENE_IMAGE_AT) {
+            for (UUID uuid : registeredPlayers) {
+                ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
+                if (player != null) {
+                    com.deception.network.ModNetworking.sendCutscene(
+                            player, true, CUTSCENE_YAW, CUTSCENE_PITCH, true);
+                }
+            }
+        }
+
+        if (cutsceneTicks == CUTSCENE_LIGHTNING_1_AT) {
+            spawnCutsceneLightning(CUTSCENE_LIGHTNING_1);
+        }
+
+        if (cutsceneTicks == CUTSCENE_LIGHTNING_2_AT) {
+            spawnCutsceneLightning(CUTSCENE_LIGHTNING_2);
+        }
+
+        if (cutsceneTicks >= CUTSCENE_DONE_AT) {
+            finishCutscene();
+        }
+    }
+
+    /** Cutscene kelar: balikin semua ke adventure, lanjut ke alur normal (cluster + kocok peran). */
+    private void finishCutscene() {
+        for (UUID uuid : registeredPlayers) {
+            ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
+            if (player != null) exitCutsceneFor(player, GameType.ADVENTURE);
+        }
+        cutsceneTicks = 0;
+        beginShufflePhase();
+    }
+
+    /**
+     * Pasang kondisi cutscene ke SATU player. Dipanggil pas cutscene mulai
+     * dan pas ada yang rejoin di tengah cutscene -- makanya
+     * {@code showImage} dikasih dari luar: yang telat join pas gambarnya
+     * udah tampil harus langsung dapet gambarnya juga, bukan nunggu beat
+     * berikutnya (yang gak bakal dateng).
+     */
+    private void applyCutsceneTo(ServerPlayer player, boolean showImage) {
+        MinecraftServer server = player.getServer();
+        if (server == null) return;
+
+        player.setGameMode(GameType.SPECTATOR);
+        // Spectator yang lagi "nempel" ke entitas lain (pernah klik orang)
+        // kameranya gak ikut pindah pas di-teleport -- lepas dulu.
+        player.setCamera(player);
+        player.removeAllEffects();
+
+        // Sisa title countdown ("Game dimulai dalam / 1") masih nempel ~1
+        // detik ke dalam cutscene kalo gak disapu -- ganggu gambar intro.
+        player.connection.send(new ClientboundSetTitlesAnimationPacket(0, 0, 0));
+        player.connection.send(new ClientboundSetTitleTextPacket(Component.empty()));
+        player.connection.send(new ClientboundSetSubtitleTextPacket(Component.empty()));
+
+        ServerLevel arena = ArenaDimension.level(server);
+        player.teleportTo(arena, CUTSCENE_X, CUTSCENE_Y, CUTSCENE_Z, CUTSCENE_YAW, CUTSCENE_PITCH);
+        PlayerFreeze.freezeAt(player, CUTSCENE_X, CUTSCENE_Y, CUTSCENE_Z, CUTSCENE_YAW, CUTSCENE_PITCH);
+        com.deception.network.ModNetworking.sendCutscene(player, true, CUTSCENE_YAW, CUTSCENE_PITCH, showImage);
+        setCutsceneMarker(player, true);
+    }
+
+    /** Lepas kondisi cutscene dari SATU player (kamera bebas, gambar ilang, gamemode dibalikin). */
+    private void exitCutsceneFor(ServerPlayer player, GameType gameMode) {
+        PlayerFreeze.unfreeze(player);
+        com.deception.network.ModNetworking.clearCutscene(player);
+        player.setGameMode(gameMode);
+        setCutsceneMarker(player, false);
+    }
+
+    /**
+     * Dipanggil TIAP player login (lihat DeceptionMod#onPlayerLoggedIn),
+     * sebelum {@link #onPlayerRejoined} -- soalnya yang itu langsung
+     * return kalo player-nya belum kebagian role, padahal pas cutscene
+     * emang belum ada role sama sekali.
+     *
+     * <p>Tiga kemungkinan:
+     * <ul>
+     *   <li>Cutscene masih jalan -> pasang lagi kondisi cutscene, lengkap
+     *       sama gambarnya kalo beat-nya emang udah lewat.</li>
+     *   <li>Dia bawa penanda cutscene tapi cutscene-nya UDAH kelar (dia DC
+     *       pas spectator, balik pas game udah jalan) -> dibalikin ke
+     *       adventure + ditarik ke arena, samain sama yang lain.</li>
+     *   <li>Bawa penanda tapi gamenya udah gak jalan (server restart /
+     *       game di-stop pas dia offline) -> balikin ke survival, jangan
+     *       ditinggal jadi spectator selamanya.</li>
+     * </ul>
+     */
+    public void syncCutsceneOnLogin(MinecraftServer server, ServerPlayer player) {
+        boolean registered = registeredPlayers.contains(player.getUUID());
+
+        if (state == State.CUTSCENE && registered) {
+            applyCutsceneTo(player, cutsceneTicks >= CUTSCENE_IMAGE_AT);
+            return;
+        }
+
+        if (!hasCutsceneMarker(player)) return;
+
+        boolean gameRunning = state != State.IDLE && registered;
+        exitCutsceneFor(player, gameRunning ? GameType.ADVENTURE : GameType.SURVIVAL);
+
+        if (gameRunning) {
+            // Dia kelewat teleport massal ke arena pas cutscene kelar --
+            // taro di titik kumpul yang sama kayak yang lain.
+            ServerLevel arena = ArenaDimension.level(server);
+            player.teleportTo(arena,
+                    ARENA_TELEPORT_POS.getX() + 0.5, ARENA_TELEPORT_POS.getY(),
+                    ARENA_TELEPORT_POS.getZ() + 0.5, player.getYRot(), 0.0F);
+        }
+    }
+
+    /** Petir cutscene: visual-only, biar gak ngebakar/ngerusak arena. */
+    private void spawnCutsceneLightning(BlockPos pos) {
+        if (serverRef == null) return;
+        ServerLevel level = ArenaDimension.level(serverRef);
+        net.minecraft.world.entity.LightningBolt bolt = EntityType.LIGHTNING_BOLT.create(level);
+        if (bolt == null) return;
+        bolt.moveTo(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5);
+        bolt.setVisualOnly(true);
+        level.addFreshEntity(bolt);
+    }
+
+    /**
+     * Samain waktu dunia kayak /time set. Semua level di-set (bukan cuma
+     * arena) soalnya dimensi custom pake data waktu turunan dari overworld,
+     * dan packet waktunya dikirim manual biar layar langsung berubah --
+     * kalo nunggu update berkala server, malemnya baru dateng sedetik
+     * kemudian, kelewat dari awal cutscene.
+     */
+    private void setCutsceneTime(MinecraftServer server) {
+        for (ServerLevel level : server.getAllLevels()) {
+            level.setDayTime(CUTSCENE_TIME_OF_DAY);
+        }
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            ServerLevel level = player.serverLevel();
+            player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetTimePacket(
+                    level.getGameTime(), level.getDayTime(),
+                    level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_DAYLIGHT)));
+        }
+    }
+
+    private static void setCutsceneMarker(ServerPlayer player, boolean value) {
+        CompoundTag persisted = player.getPersistentData()
+                .getCompound(net.minecraft.world.entity.player.Player.PERSISTED_NBT_TAG);
+        if (value) {
+            persisted.putBoolean(CUTSCENE_NBT_KEY, true);
+        } else {
+            persisted.remove(CUTSCENE_NBT_KEY);
+        }
+        player.getPersistentData().put(net.minecraft.world.entity.player.Player.PERSISTED_NBT_TAG, persisted);
+    }
+
+    private static boolean hasCutsceneMarker(ServerPlayer player) {
+        return player.getPersistentData()
+                .getCompound(net.minecraft.world.entity.player.Player.PERSISTED_NBT_TAG)
+                .getBoolean(CUTSCENE_NBT_KEY);
+    }
+
     // ---------- Tick loop ----------
 
     public void tick() {
@@ -4413,23 +4657,12 @@ public class GameManager {
                 // disusun ulang biar gak ada celah di antaranya.
                 restoreArena(serverRef);
 
-                computeRoleAssignments();
-                teleportPlayersAndDecorateArena(serverRef);
-                state = State.SHUFFLE;
-                shuffleTicksLeft = SHUFFLE_DURATION_TICKS;
-                activeRolePool = computeActiveRolePool();
-                for (UUID uuid : registeredPlayers) {
-                    ServerPlayer player = serverRef.getPlayerList().getPlayer(uuid);
-                    if (player != null) {
-                        sendTitle(
-                            player,
-                            Component.literal("Mengocok Peran").withStyle(ChatFormatting.GOLD),
-                            Component.empty(),
-                            0, SHUFFLE_DURATION_TICKS, 0
-                        );
-                    }
-                }
+                // Cutscene dulu; kocok peran & tarik ke cluster baru jalan
+                // pas cutscene-nya kelar (lihat finishCutscene).
+                startCutscene(serverRef);
             }
+        } else if (state == State.CUTSCENE) {
+            tickCutscene();
         } else if (state == State.SHUFFLE) {
             shuffleTicksLeft--;
             spinRoleTitle();

@@ -34,6 +34,9 @@ public class ModClientSetup {
             MinecraftForge.EVENT_BUS.register(MovementLockClientState.class);
             // Butuh tick client sendiri buat ngitung umur baris penolakan.
             MinecraftForge.EVENT_BUS.register(SelectionHudState.class);
+            // Kunci kamera pas cutscene intro -- perlu hook tick + frame
+            // sendiri, lihat javadoc CutsceneClientState.
+            MinecraftForge.EVENT_BUS.register(CutsceneClientState.class);
 
         });
     }
@@ -44,5 +47,6 @@ public class ModClientSetup {
         MurderResultOverlay.register(event);
         RoleVisibleOverlay.register(event);
         SelectionOverlay.register(event);
+        CutsceneOverlay.register(event);
     }
 }
